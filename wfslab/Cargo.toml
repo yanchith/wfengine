@@ -1,0 +1,13 @@
+[package]
+name = "wfslab"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck = { version = "1.23.1", features = ["derive"] }
+
+[dev-dependencies]
+oorandom = "11.1.5"

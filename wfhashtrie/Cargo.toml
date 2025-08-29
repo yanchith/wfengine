@@ -1,0 +1,13 @@
+[package]
+name = "wfhashtrie"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+ahash = "0.8.12"
+oorandom = "11.1.5"
+hashbrown = { version = "0.15.4", default-features = false, features = ["default-hasher", "nightly"] }
+wfarena = { path = "../wfarena" }

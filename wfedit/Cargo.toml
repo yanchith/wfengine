@@ -1,0 +1,19 @@
+[package]
+name = "wfedit"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+wfcommon = { path = "../wfcommon" }
+wfedit_derive = { path = "../wfedit_derive" }
+wfinlinevec = { path = "../wfinlinevec" }
+wfmath = { path = "../wfmath" }
+wfgui = { path = "../wfgui", features = ["font_ibm_plex_mono"] }
+
+[dev-dependencies]
+wfarena = { path = "../wfarena" }
+wftime = { path = "../wftime" }

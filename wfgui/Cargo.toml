@@ -1,0 +1,36 @@
+[package]
+name = "wfgui"
+version = "0.1.0"
+edition = "2024"
+
+authors = ["yanchith <yanchi.toth@gmail.com>"]
+keywords = ["gui", "graphics"]
+categories = ["gui", "imgui", "portable"]
+description = "A portable immediate-mode UI"
+readme = "README.md"
+license = "MIT"
+
+[features]
+font_ibm_plex_mono = []
+font_ibm_plex_sans_jp = []
+font_proggy_clean = []
+font_roboto = []
+font_liberation_mono = []
+
+[lints]
+workspace = true
+
+[dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+bytemuck = { version = "1.23.1", features = ["derive"] }
+fontdue = "0.9.3"
+hashbrown = { version = "0.15.4", default-features = false, features = ["default-hasher", "nightly"] }
+wfarena = { path = "../wfarena" }
+wfcommon = { path = "../wfcommon" }
+wfflags = { path = "../wfflags" }
+wfinlinevec = { path = "../wfinlinevec" }
+wfmath = { path = "../wfmath" }
+wfslab = { path = "../wfslab" }
+wftime = { path = "../wftime", features = ["bytemuck"] }
+libm = "0.2.15"
+log = "0.4.27"

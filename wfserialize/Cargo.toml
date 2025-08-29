@@ -1,0 +1,27 @@
+[package]
+name = "wfserialize"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+wfmath = ["dep:wfmath"]
+wfslab = ["dep:wfslab"]
+wftime = ["dep:wftime"]
+
+[lints]
+workspace = true
+
+# IMPORTANT(yan):
+#
+# Any library you add here has to be #![no_std] (same as this crate), otherwise
+# the game core will silently depend on Rust's std.
+[dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+hashbrown = { version = "0.15.4", default-features = false, features = ["default-hasher", "nightly"] }
+wfserialize_derive = { path = "../wfserialize_derive" }
+wfmath = { path = "../wfmath", optional = true }
+wfslab = { path = "../wfslab", optional = true }
+wftime = { path = "../wftime", optional = true }
+
+[dev-dependencies]
+wfarena = { path = "../wfarena" }

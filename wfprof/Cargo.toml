@@ -1,0 +1,17 @@
+[package]
+name = "wfprof"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+# IMPORTANT(yan):
+#
+# Any library you add here has to be #![no_std] (same as this crate), otherwise
+# the game core will silently depend on Rust's std.
+[dependencies]
+wfcommon = { path = "../wfcommon" }
+
+[dev-dependencies]
+oorandom = "11.1.5"
