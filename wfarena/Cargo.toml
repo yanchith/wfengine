@@ -1,0 +1,32 @@
+[package]
+name = "wfarena"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+virtual_memory_windows = ["dep:windows-sys"]
+virtual_memory_unix    = ["dep:libc"]
+safe_scopes = []
+
+[lints]
+workspace = true
+
+# IMPORTANT(yan):
+#
+# Any library you add here has to be #![no_std] (same as this crate), otherwise
+# the game core will silently depend on Rust's std.
+[target.'cfg(all(target_family = "windows"))'.dependencies]
+windows-sys = { version = "0.60.2", default-features = false, features = ["Win32_System_Memory", "Win32_System_SystemInformation"], optional = true }
+
+[target.'cfg(all(target_family = "unix"))'.dependencies]
+libc = { version = "0.2.174", default-features = false, optional = true }
+
+[dev-dependencies]
+bumpalo = { version = "3.19.0", default-features = false, features = ["allocator_api"] }
+oorandom = "11.1.5"
+
+[target.'cfg(target_family = "windows")'.dev-dependencies]
+windows-sys = { version = "0.60.2", default-features = false, features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
+
+[target.'cfg(target_family = "unix")'.dev-dependencies]
+libc = { version = "0.2.174", default-features = false }

@@ -1,0 +1,52 @@
+[profile.dev]
+# TODO(jt): Enable this once it doesn't trap on x64.
+# codegen-backend = "cranelift"
+
+[profile.release]
+incremental = false
+opt-level = "z"
+codegen-units = 1
+
+[workspace]
+resolver = "3"
+members = [
+    "wfarena",
+    "wfcommon",
+    "wfedit",
+    "wfedit_derive",
+    "wfflags",
+    "wfgui",
+    "wfhashtrie",
+    # TODO(jt): We theoretically don't need the arrayvec crate anymore?
+    "wfinlinevec",
+    "wfmath",
+    "wfprof",
+    "wfserialize",
+    "wfserialize_derive",
+    "wfslab",
+    "wftime",
+]
+
+
+[workspace.lints.clippy]
+cmp_null                   = "allow"
+collapsible_else_if        = "allow"
+collapsible_if             = "allow"
+comparison_chain           = "allow"
+comparison_to_empty        = "allow"
+len_without_is_empty       = "allow"
+len_zero                   = "allow"
+let_and_return             = "allow"
+manual_filter              = "allow"
+manual_map                 = "allow"
+manual_unwrap_or_default   = "allow"
+match_like_matches_macro   = "allow"
+new_without_default        = "allow"
+needless_range_loop        = "allow"
+uninlined_format_args      = "allow"
+op_ref                     = "allow"
+partialeq_to_none          = "allow"
+redundant_pattern_matching = "allow"
+single_match               = "allow"
+too_many_arguments         = "allow"
+type_complexity            = "allow"

@@ -1,0 +1,13 @@
+[package]
+name = "wftime"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+bytemuck = ["dep:bytemuck"]
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck = { version = "1.23.1", features = ["derive"], optional = true }

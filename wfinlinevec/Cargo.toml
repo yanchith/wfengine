@@ -1,0 +1,15 @@
+[package]
+name = "wfinlinevec"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+bytemuck = ["dep:bytemuck"]
+serialize = ["dep:wfserialize"]
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck = { version = "1.23.1", features = ["derive"], optional = true }
+wfserialize = { path = "../wfserialize", optional = true }
