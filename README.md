@@ -29,15 +29,14 @@ Notable libraries:
 
 - `wfhashtrie`: An arena-friendly (does not reallocate) hash table.
 
-- `wfflags`: A proc-macro (a piece of Rust you execute at compile time to generate code) that an
-  enum declaration into a typesafe flags type.
+- `wfflags`: A proc-macro (a piece of Rust you execute at compile time to generate code) that turns
+  an enum declaration into a typesafe flags type.
 
 - `wfserialize`: A serialization system that supports per-struct versioning. Currently only
-  serializes to text, but a binary backend should be possible.
+  serializes to text, but a binary backend is on the roadmap.
 
-- `wfinlinevec`: Just like the [arrayvec library](https://github.com/bluss/arrayvec), but you
-  reinterpret the bytes with `mem::transmute` (or a safe wrapper like `bytemuck`) and LLVM won't
-  delete your code.
+- `wfinlinevec`: Just like the [arrayvec library](https://github.com/bluss/arrayvec), but you can
+  reinterpret the bytes with `mem::transmute` (or a safe wrapper like `bytemuck`) without fear of LLVM.
 
 And others.
 
