@@ -23,6 +23,13 @@ struct Node<K, V> {
     parent: *mut Node<K, V>,
 }
 
+// TODO(jt): @Speed Document that where this shines (arena-friendliness), and that hashbrown is
+// basically faster for almost every usecase. (Unless you are creating a new hash table with less
+// than 1M items and are using an arena, in which case this may be faster - the inflection point is
+// around 10k items)... Or try and speeding this up somehow? Maybe try porting the simple JAI
+// hashtable and see how this compares to that, so that we don't compare ourselves with
+// super-complicated hyper-optimized SwissTable.
+
 /// An arena-friendly dictionary based on a Hash Trie.
 ///
 /// It supports insertion and retrieval, but not deletion. New memory is allocated as needed, but
@@ -299,7 +306,7 @@ impl<K: Eq + Hash + Clone, V: Clone, A: Allocator + Clone, S: BuildHasher + Clon
     fn clone(&self) -> Self {
         let mut h = HashTrie::with_hasher_in(self.hasher.clone(), self.allocator.clone());
 
-        // TODO(yan): @Speed We don't need to through insert hashing. We could just clone the nodes.
+        // TODO(yan): @Speed We don't need to go through insert hashing. We could just clone the nodes.
         for (k, v) in self.iter() {
             h.insert(k.clone(), v.clone());
         }
@@ -795,69 +802,68 @@ mod tests {
         };
     }
 
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_0128, 128);
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_0256, 256);
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_0512, 512);
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_1024, 1024);
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_2048, 2048);
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_4096, 4096);
-    benchmark!(bench_insert_hashtrie, insert_hashtrie_8192, 8192);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_128b, 128);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_256b, 256);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_512b, 512);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_1k, 1 << 10);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_8k, 8 << 10);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_32k, 32 << 10);
+    benchmark!(bench_insert_hashtrie, insert_hashtrie_1m, 1 << 20);
 
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_0128, 128);
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_0256, 256);
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_0512, 512);
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_1024, 1024);
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_2048, 2048);
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_4096, 4096);
-    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_8192, 8192);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_128b, 128);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_256b, 256);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_512b, 512);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_1k, 1 << 10);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_8k, 8 << 10);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_32k, 32 << 10);
+    benchmark!(bench_insert_hashtrie_arena, insert_hashtrie_arena_1m, 1 << 20);
 
-    benchmark!(bench_insert_hashmap, insert_hashmap_0128, 128);
-    benchmark!(bench_insert_hashmap, insert_hashmap_0256, 256);
-    benchmark!(bench_insert_hashmap, insert_hashmap_0512, 512);
-    benchmark!(bench_insert_hashmap, insert_hashmap_1024, 1024);
-    benchmark!(bench_insert_hashmap, insert_hashmap_2048, 2048);
-    benchmark!(bench_insert_hashmap, insert_hashmap_4096, 4096);
-    benchmark!(bench_insert_hashmap, insert_hashmap_8192, 8192);
+    benchmark!(bench_insert_hashmap, insert_hashmap_128b, 128);
+    benchmark!(bench_insert_hashmap, insert_hashmap_256b, 256);
+    benchmark!(bench_insert_hashmap, insert_hashmap_512b, 512);
+    benchmark!(bench_insert_hashmap, insert_hashmap_1k, 1 << 10);
+    benchmark!(bench_insert_hashmap, insert_hashmap_8k, 8 << 10);
+    benchmark!(bench_insert_hashmap, insert_hashmap_1m, 1 << 20);
 
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_0128, 128);
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_0256, 256);
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_0512, 512);
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_1024, 1024);
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_2048, 2048);
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_4096, 4096);
-    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_8192, 8192);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_128b, 128);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_256b, 256);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_512b, 512);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_1k, 1 << 10);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_8k, 8 << 10);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_32k, 32 << 10);
+    benchmark!(bench_insert_hashmap_arena, insert_hashmap_arena_1m, 1 << 20);
 
-    benchmark!(bench_get_hashtrie, get_hashtrie_0128, 128);
-    benchmark!(bench_get_hashtrie, get_hashtrie_0256, 256);
-    benchmark!(bench_get_hashtrie, get_hashtrie_0512, 512);
-    benchmark!(bench_get_hashtrie, get_hashtrie_1024, 1024);
-    benchmark!(bench_get_hashtrie, get_hashtrie_2048, 2048);
-    benchmark!(bench_get_hashtrie, get_hashtrie_4096, 4096);
-    benchmark!(bench_get_hashtrie, get_hashtrie_8192, 8192);
+    benchmark!(bench_get_hashtrie, get_hashtrie_128b, 128);
+    benchmark!(bench_get_hashtrie, get_hashtrie_256b, 256);
+    benchmark!(bench_get_hashtrie, get_hashtrie_512b, 512);
+    benchmark!(bench_get_hashtrie, get_hashtrie_1k, 1 << 10);
+    benchmark!(bench_get_hashtrie, get_hashtrie_8k, 8 << 10);
+    benchmark!(bench_get_hashtrie, get_hashtrie_32k, 32 << 10);
+    benchmark!(bench_get_hashtrie, get_hashtrie_1m, 1 << 20);
 
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_0128, 128);
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_0256, 256);
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_0512, 512);
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_1024, 1024);
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_2048, 2048);
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_4096, 4096);
-    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_8192, 8192);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_128b, 128);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_256b, 256);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_512b, 512);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_1k, 1 << 10);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_8k, 8 << 10);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_32k, 32 << 10);
+    benchmark!(bench_get_hashtrie_arena, get_hashtrie_arena_1m, 1 << 20);
 
-    benchmark!(bench_get_hashmap, get_hashmap_0128, 128);
-    benchmark!(bench_get_hashmap, get_hashmap_0256, 256);
-    benchmark!(bench_get_hashmap, get_hashmap_0512, 512);
-    benchmark!(bench_get_hashmap, get_hashmap_1024, 1024);
-    benchmark!(bench_get_hashmap, get_hashmap_2048, 2048);
-    benchmark!(bench_get_hashmap, get_hashmap_4096, 4096);
-    benchmark!(bench_get_hashmap, get_hashmap_8192, 8192);
+    benchmark!(bench_get_hashmap, get_hashmap_128b, 128);
+    benchmark!(bench_get_hashmap, get_hashmap_256b, 256);
+    benchmark!(bench_get_hashmap, get_hashmap_512b, 512);
+    benchmark!(bench_get_hashmap, get_hashmap_1k, 1 << 10);
+    benchmark!(bench_get_hashmap, get_hashmap_8k, 8 << 10);
+    benchmark!(bench_get_hashmap, get_hashmap_32k, 32 << 10);
+    benchmark!(bench_get_hashmap, get_hashmap_1m, 1 << 20);
 
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_0128, 128);
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_0256, 256);
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_0512, 512);
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_1024, 1024);
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_2048, 2048);
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_4096, 4096);
-    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_8192, 8192);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_128b, 128);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_256b, 256);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_512b, 512);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_1k, 1 << 10);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_8k, 8 << 10);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_32k, 32 << 10);
+    benchmark!(bench_get_hashmap_arena, get_hashmap_arena_1m, 1 << 20);
 
     fn bench_insert_hashtrie(b: &mut Bencher, n: usize) {
         let data = make_bench_data(n);
@@ -876,8 +882,8 @@ mod tests {
     fn bench_insert_hashtrie_arena(b: &mut Bencher, n: usize) {
         let data = make_bench_data(n);
 
-        let block = allocate_memory_block(1 << 20, 16);
-        let mut arena = unsafe { Arena::with_memory_block(block.ptr(), block.len()).unwrap() };
+        let block = allocate_memory_block(128 << 20, 16);
+        let mut arena = unsafe { Arena::with_first_block(block.ptr(), block.len()).unwrap() };
 
         b.iter(|| {
             arena.reset();
@@ -912,8 +918,8 @@ mod tests {
     fn bench_insert_hashmap_arena(b: &mut Bencher, n: usize) {
         let data = make_bench_data(n);
 
-        let block = allocate_memory_block(1 << 20, 16);
-        let mut arena = unsafe { Arena::with_memory_block(block.ptr(), block.len()).unwrap() };
+        let block = allocate_memory_block(128 << 20, 16);
+        let mut arena = unsafe { Arena::with_first_block(block.ptr(), block.len()).unwrap() };
 
         b.iter(|| {
             arena.reset();
@@ -954,8 +960,8 @@ mod tests {
     fn bench_get_hashtrie_arena(b: &mut Bencher, n: usize) {
         let data = make_bench_data(n);
 
-        let block = allocate_memory_block(1 << 20, 16);
-        let arena = unsafe { Arena::with_memory_block(block.ptr(), block.len()).unwrap() };
+        let block = allocate_memory_block(128 << 20, 16);
+        let arena = unsafe { Arena::with_first_block(block.ptr(), block.len()).unwrap() };
 
         let hasher = BuildHasherDefault::<ahash::AHasher>::default();
         let mut h: HashTrie<u32, u32, _, _> = HashTrie::with_hasher_in(hasher, &arena);
@@ -997,8 +1003,8 @@ mod tests {
     fn bench_get_hashmap_arena(b: &mut Bencher, n: usize) {
         let data = make_bench_data(n);
 
-        let block = allocate_memory_block(1 << 20, 16);
-        let arena = unsafe { Arena::with_memory_block(block.ptr(), block.len()).unwrap() };
+        let block = allocate_memory_block(128 << 20, 16);
+        let arena = unsafe { Arena::with_first_block(block.ptr(), block.len()).unwrap() };
 
         let hasher = BuildHasherDefault::<ahash::AHasher>::default();
         let mut h: HashMap<u32, u32, _, _> = HashMap::with_hasher_in(hasher, &arena);

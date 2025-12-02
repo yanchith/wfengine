@@ -71,7 +71,7 @@ fn test_deserialize_in_arena_vec() {
     struct Foo<'a>(Vec<u8, &'a Arena>);
 
     let b = allocate_memory_block(1 << 20, 16);
-    let arena = unsafe { Arena::with_memory_block(b.ptr(), b.len()).unwrap() };
+    let arena = unsafe { Arena::with_first_block(b.ptr(), b.len()).unwrap() };
 
     let str = r#"Foo ([1, 2, 3, 4])"#;
     let res = wfserialize::deserialize_in::<Foo, _, _>(str, &arena, &arena);
@@ -87,7 +87,7 @@ fn test_deserialize_in_arena_vec_nested() {
     struct Foo<'a>(Vec<Vec<u8, &'a Arena>, &'a Arena>);
 
     let b = allocate_memory_block(1 << 20, 16);
-    let arena = unsafe { Arena::with_memory_block(b.ptr(), b.len()).unwrap() };
+    let arena = unsafe { Arena::with_first_block(b.ptr(), b.len()).unwrap() };
 
     let str = r#"Foo ([[1, 2], [3], [4]])"#;
     let res = wfserialize::deserialize_in::<Foo, _, _>(str, &arena, &arena);

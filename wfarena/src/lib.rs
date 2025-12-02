@@ -12,6 +12,7 @@
 mod arena;
 mod memory;
 
+pub use crate::arena::ARENA_HEADER_ALIGN;
 pub use crate::arena::ARENA_HEADER_SIZE;
 pub use crate::arena::Arena;
 pub use crate::arena::ArenaInitError;

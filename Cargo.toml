@@ -29,19 +29,20 @@ members = [
 
 
 [workspace.lints.clippy]
-cmp_null                   = "allow"
+cmp_null                   = "allow" # Typing p == ptr::null() is more consistent with the style.
 collapsible_else_if        = "allow"
 collapsible_if             = "allow"
 comparison_chain           = "allow"
 comparison_to_empty        = "allow"
-len_without_is_empty       = "allow"
-len_zero                   = "allow"
+len_without_is_empty       = "allow" # This codebase is not that big on .is_empty()
+len_zero                   = "allow" # Typing len() == 0 is the same number of characters, and I've never seen a datastructure that could only tell its emptiness efficiently.
 let_and_return             = "allow"
 manual_filter              = "allow"
+manual_is_multiple_of      = "allow" # Seems silly. Checking divisibility with % is an idiom.
 manual_map                 = "allow"
 manual_unwrap_or_default   = "allow"
 match_like_matches_macro   = "allow"
-new_without_default        = "allow"
+new_without_default        = "allow" # This is just plain wrong once you start thinking about where the memory comes from.
 needless_range_loop        = "allow"
 uninlined_format_args      = "allow"
 op_ref                     = "allow"

@@ -10,6 +10,7 @@ use core::ptr;
 use core::ptr::NonNull;
 
 pub const ARENA_HEADER_SIZE: usize = size_of::<ArenaBlockHeader>();
+pub const ARENA_HEADER_ALIGN: usize = align_of::<ArenaBlockHeader>();
 
 const FLAG_NONE: u64 = 0;
 const FLAG_CAN_CHAIN: u64 = 1 << 0;
@@ -41,8 +42,7 @@ pub struct ArenaInitError;
 //
 // TODO(jt): If we allowed de-committing memory (via vm_decommit) when resetting down to a size,
 // we'd gain the benefit of being able to release memory back to the OS even within one reserved
-// block, making the huge-reserved-block implementations have the benefits of both worlds. The
-// branch predictor could even predict we won't need to check for block overruns.
+// block, making the huge-reserved-block implementations have the benefits of both worlds.
 
 /// An arena. Implements [`core::alloc::Allocator`].
 #[repr(C)]
@@ -50,9 +50,6 @@ pub struct ArenaInitError;
 pub struct Arena {
     current: Cell<NonNull<ArenaBlockHeader>>,
 
-    // TODO(jt): We can in theory pass malloc/free as vm_reserve/vm_release and a noop for
-    // vm_commit. This would make it compatible with systems without virtual memory. Let's test this
-    // out, and document it, if it is possible.
     vm_reserve: fn(size: usize) -> *mut c_void,
     vm_commit: unsafe fn(ptr: *mut c_void, size: usize) -> bool,
     vm_release: unsafe fn(ptr: *mut c_void, size: usize),
@@ -77,7 +74,7 @@ impl Arena {
     ///
     /// The memory described by the `block` pointer and `size` must be *dereferencable*, as
     /// described in [`core::ptr`] module documentation.
-    pub unsafe fn with_memory_block(block: NonNull<u8>, size: usize) -> Result<Self, ArenaInitError> {
+    pub unsafe fn with_first_block(block: NonNull<u8>, size: usize) -> Result<Self, ArenaInitError> {
         fn noop_reserve(_size: usize) -> *mut c_void {
             ptr::null_mut()
         }
@@ -89,13 +86,13 @@ impl Arena {
         fn noop_release(_ptr: *mut c_void, _size: usize) {}
 
         unsafe {
-            Self::with_optional_memory_block_and_virtual_memory(
+            Self::with_optional_first_block_and_virtual_memory(
                 Some(block),
                 size,
                 noop_reserve,
                 noop_commit,
                 noop_release,
-                // page_size, reserve_size, and commit_size must be nonzero, so that align_to doesn't assert,
+                // page_size, reserve_size, and commit_size must be nonzero, so that align doesn't assert,
                 // but they will never be used, because chaining is disabled.
                 1,
                 1,
@@ -105,13 +102,54 @@ impl Arena {
         }
     }
 
+    /// Creates an arena that acquires memory from a general purpose allocator.
+    ///
+    /// The arena starts out by allocating a block of memory, and will use that to fulfill
+    /// allocation requests. When the block runs out and `allow_chaining` is set, the arena allocates
+    /// another block.
+    ///
+    /// Each block has at least `block_size` allocated memory, however this is adjusted by the size
+    /// and alignment of the current allocation request.
+    ///
+    /// `block_allocate` is used to allocate the block. A valid implementation can be `malloc`, but
+    /// returned pointer must be aligned to at least the [`ARENA_HEADER_ALIGN`].
+    ///
+    /// `block_free` is used to free previously allocated blocks. A valid implementation can be
+    /// `free`.
+    ///
+    /// This is meant to be a way to construct an arena on systems without virtual memory (and to be
+    /// able to test arena with miri). If possible, use virtual memory instead, as that will have
+    /// less overhead on the side of the OS, even the implementation inside the arena is basically
+    /// the same.
+    ///
+    /// # Safety
+    ///
+    /// `block_allocate` and `block_free` must do what they say they do.
+    pub unsafe fn with_block_allocator(
+        block_allocate: fn(size: usize) -> *mut c_void,
+        block_free: unsafe fn(ptr: *mut c_void, size: usize),
+        block_size: usize,
+        allow_chaining: bool,
+    ) -> Result<Self, ArenaInitError> {
+        unsafe {
+            Self::with_optional_first_block_and_block_allocator(
+                None,
+                0,
+                block_allocate,
+                block_free,
+                block_size,
+                allow_chaining,
+            )
+        }
+    }
+
     /// Creates an arena that acquires its memory from the virtual memory system.
     ///
     /// The arena starts out by reserving a block of memory, and will use that to fulfill allocation
-    /// requests. When the block runs out and `allow_chaining` is set, the arena allocates another
-    /// block.
+    /// requests, committing as needed. When the block runs out and `allow_chaining` is set, the
+    /// arena reserves another block.
     ///
-    /// Each allocated blocks starts out with at least `reserve_size` reserved memory and
+    /// Each reserved block has at least `reserve_size` reserved memory and starts out with
     /// `commit_size` pre-committed memory, however these are adjusted by the page size as well as
     /// the size and alignment of the current allocation request.
     ///
@@ -145,7 +183,7 @@ impl Arena {
         allow_chaining: bool,
     ) -> Result<Self, ArenaInitError> {
         unsafe {
-            Self::with_optional_memory_block_and_virtual_memory(
+            Self::with_optional_first_block_and_virtual_memory(
                 None,
                 0,
                 vm_reserve,
@@ -159,15 +197,49 @@ impl Arena {
         }
     }
 
+    /// Creates an arena that acquires its memory from a general purpose allocator, but the first
+    /// block can be passed in by the caller.
+    ///
+    /// # Safety
+    ///
+    /// See [`Self::with_first_block`] and [`Self::with_block_allocator`] for more information.
+    pub unsafe fn with_optional_first_block_and_block_allocator(
+        first_block: Option<NonNull<u8>>,
+        first_block_size: usize,
+        block_allocate: fn(size: usize) -> *mut c_void,
+        block_free: unsafe fn(ptr: *mut c_void, size: usize),
+        block_size: usize,
+        allow_chaining: bool,
+    ) -> Result<Self, ArenaInitError> {
+        // The malloc/free interface is compatible with the VM interface:
+        // - vm_reserve   -> malloc or Allocator::allocate
+        // - vm_release   -> free of Allocator::deallocate
+        // - vm_commit    -> noop, return true
+        // - vm_page_size -> meaningless
+        unsafe {
+            Self::with_optional_first_block_and_virtual_memory(
+                first_block,
+                first_block_size,
+                block_allocate,
+                |_, _| true,
+                block_free,
+                ARENA_HEADER_ALIGN, // We pass in header align to pass asserts for block pointers.
+                block_size,
+                block_size,
+                allow_chaining,
+            )
+        }
+    }
+
     /// Creates an arena that acquires its memory from the virtual memory system, but the first
     /// block can be passed in by the caller.
     ///
     /// # Safety
     ///
-    /// See [`Self::with_memory_block`] and [`Self::with_virtual_memory`] for more information.
-    pub unsafe fn with_optional_memory_block_and_virtual_memory(
-        block: Option<NonNull<u8>>,
-        size: usize,
+    /// See [`Self::with_first_block`] and [`Self::with_virtual_memory`] for more information.
+    pub unsafe fn with_optional_first_block_and_virtual_memory(
+        first_block: Option<NonNull<u8>>,
+        first_block_size: usize,
         vm_reserve: fn(size: usize) -> *mut c_void,
         vm_commit: unsafe fn(ptr: *mut c_void, size: usize) -> bool,
         vm_release: unsafe fn(ptr: *mut c_void, size: usize),
@@ -181,15 +253,15 @@ impl Arena {
         assert!(reserve_size >= commit_size);
 
         // Make sure we can at least allocate the header in new blocks.
-        let reserve_size = align_to(reserve_size, usize::max(vm_page_size, size_of::<ArenaBlockHeader>()));
-        let commit_size = align_to(commit_size, usize::max(vm_page_size, size_of::<ArenaBlockHeader>()));
+        let reserve_size = align(reserve_size, usize::max(vm_page_size, size_of::<ArenaBlockHeader>()));
+        let commit_size = align(commit_size, usize::max(vm_page_size, size_of::<ArenaBlockHeader>()));
 
         let mut flags = FLAG_NONE;
         if allow_chaining {
             flags |= FLAG_CAN_CHAIN;
         }
 
-        let current = if let Some(block) = block {
+        let current = if let Some(block) = first_block {
             // block:       pointer to the block the user provided
             // block_base:  pointer to our block header, same as block if it was sufficiently aligned
             // block_start: pointer to start of memory we will be allocating
@@ -198,7 +270,7 @@ impl Arena {
             let block_addr = addr(block);
 
             // Can we compute the end of our memory block without overflowing?
-            let block_end_addr = block_addr.checked_add(size).ok_or(ArenaInitError)?;
+            let block_end_addr = block_addr.checked_add(first_block_size).ok_or(ArenaInitError)?;
 
             // Will we be able to service at least one largest possible allocation request without
             // overflowing?
@@ -220,7 +292,7 @@ impl Arena {
             }
 
             // Align the block for header and check whether we have enough space to store it.
-            let block_base_addr = align_to(block_addr, align_of::<ArenaBlockHeader>());
+            let block_base_addr = align(block_addr, align_of::<ArenaBlockHeader>());
             if block_end_addr < block_base_addr {
                 return Err(ArenaInitError);
             }
@@ -244,7 +316,7 @@ impl Arena {
                 allocated: Cell::new(block_start),
                 committed: Cell::new(block_end), // The given block is already commited.
 
-                reserve_size: size, // Won't be read
+                reserve_size: first_block_size, // Won't be read
 
                 prev: ptr::null_mut(),
             };
@@ -507,27 +579,30 @@ impl Arena {
         let reset = usize::max(self.reset_min, reset);
 
         let vm_release = self.vm_release;
-        let mut current = unsafe { self.current.get().as_ref() };
 
-        while current.prev != ptr::null_mut() && current.size_before_this_block > reset {
-            let prev = current.prev;
-            unsafe {
-                vm_release(current as *const ArenaBlockHeader as *mut c_void, current.reserve_size);
+        // SAFETY: Even though we could get a valid reference to current, we operate on raw pointers
+        // instead, because we are passing the pointer derived from that reference to
+        // vm_release. Miri actually detected this, and we are not taking any chances.
+        let mut current: *mut ArenaBlockHeader = self.current.get().as_ptr();
+
+        unsafe {
+            while (*current).prev != ptr::null_mut() && (*current).size_before_this_block > reset {
+                let prev = (*current).prev;
+                vm_release(current as *mut c_void, (*current).reserve_size);
+
+                current = prev;
             }
 
-            current = unsafe { &*prev };
+            let size_before_current = (*current).size_before_this_block;
+            let base = addr((*current).base);
+            let reset_bottom = size_before_current + size_of::<ArenaBlockHeader>();
+
+            let new_allocated = usize::max(reset_bottom, reset) - size_before_current + base;
+
+            (*current).allocated.set((*current).base.with_addr(nz(new_allocated)));
         }
 
-        let size_before_current = current.size_before_this_block;
-        let base = addr(current.base);
-        let reset_bottom = size_before_current + size_of::<ArenaBlockHeader>();
-
-        let new_allocated = usize::max(reset_bottom, reset) - size_before_current + base;
-        current
-            .allocated
-            .set(current.base.with_addr(unsafe { nz(new_allocated) }));
-
-        self.current.set(NonNull::from(current));
+        self.current.set(NonNull::new(current).unwrap());
     }
 
     /// Allocates the arena in its own memory and returns a reference with a static lifetime.
@@ -586,7 +661,7 @@ impl Arena {
         }
 
         let mut current = unsafe { self.current.get().as_ref() };
-        let mut allocated_pre = align_to(addr_in_cell(&current.allocated), layout.align());
+        let mut allocated_pre = align(addr_in_cell(&current.allocated), layout.align());
         let mut allocated_post = allocated_pre + layout.size();
 
         #[cfg(debug_assertions)]
@@ -607,9 +682,9 @@ impl Arena {
             // These asserts only hold if the first block was allocated from virtual memory, but not
             // when it was given to us by the caller.
             //
-            // debug_assert!(align_to(current_base, self.vm_page_size) == current_base);
-            // debug_assert!(align_to(current_commit, self.vm_page_size) == current_commit);
-            // debug_assert!(align_to(current_end, self.vm_page_size) == current_end);
+            // debug_assert!(is_aligned(current_base, self.vm_page_size));
+            // debug_assert!(is_aligned(current_commit, self.vm_page_size));
+            // debug_assert!(is_aligned(current_end, self.vm_page_size));
         }
 
         // Reserve a new block, if needed
@@ -618,12 +693,12 @@ impl Arena {
                 return Err(AllocError);
             }
 
-            let required_size = align_to(size_of::<ArenaBlockHeader>(), layout.align()) + layout.size();
+            let required_size = align(size_of::<ArenaBlockHeader>(), layout.align()) + layout.size();
             let mut reserve_size = self.reserve_size;
             let mut commit_size = self.commit_size;
 
             if required_size > reserve_size {
-                let aligned_required_size = align_to(required_size, self.vm_page_size);
+                let aligned_required_size = align(required_size, self.vm_page_size);
                 reserve_size = aligned_required_size;
                 commit_size = aligned_required_size;
             }
@@ -641,7 +716,7 @@ impl Arena {
             self.current.set(block_base);
 
             current = unsafe { block_base.as_ref() };
-            allocated_pre = align_to(addr_in_cell(&current.allocated), layout.align());
+            allocated_pre = align(addr_in_cell(&current.allocated), layout.align());
             allocated_post = allocated_pre + layout.size();
         }
 
@@ -653,7 +728,7 @@ impl Arena {
 
             let vm_commit = self.vm_commit;
 
-            let committed_post = usize::min(align_to(allocated_post, self.commit_size), addr(current.end));
+            let committed_post = usize::min(align(allocated_post, self.commit_size), addr(current.end));
             let commit_size = committed_post - addr_in_cell(&current.committed);
             if unsafe { !vm_commit(current.committed.get().as_ptr() as *mut c_void, commit_size) } {
                 return Err(AllocError);
@@ -807,19 +882,23 @@ impl Arena {
 impl Drop for Arena {
     fn drop(&mut self) {
         let vm_release = self.vm_release;
-        let mut current = unsafe { self.current.get().as_ref() };
 
-        while current.prev != ptr::null_mut() {
-            let prev = current.prev;
-            unsafe {
-                vm_release(current as *const ArenaBlockHeader as *mut c_void, current.reserve_size);
+        // SAFETY: Even though we could get a valid reference to current, we operate on raw pointers
+        // instead, because we are passing the pointer derived from that reference to
+        // vm_release. Miri actually detected this, and we are not taking any chances.
+        let mut current: *mut ArenaBlockHeader = self.current.get().as_ptr();
+
+        unsafe {
+            while (*current).prev != ptr::null_mut() {
+                let prev = (*current).prev;
+                vm_release(current as *mut c_void, (*current).reserve_size);
+
+                current = prev;
             }
 
-            current = unsafe { &*prev };
-        }
-
-        if self.flags & FLAG_CAN_RELEASE_FIRST_BLOCK > 0 {
-            unsafe { vm_release(current as *const ArenaBlockHeader as *mut c_void, current.reserve_size) }
+            if self.flags & FLAG_CAN_RELEASE_FIRST_BLOCK > 0 {
+                vm_release(current as *mut c_void, (*current).reserve_size);
+            }
         }
     }
 }
@@ -932,8 +1011,8 @@ fn allocate_and_init_block(
     }
 
     let block_base_addr = block as usize;
-    debug_assert!(block_base_addr == align_to(block_base_addr, align_of::<ArenaBlockHeader>()));
-    debug_assert!(block_base_addr == align_to(block_base_addr, vm_page_size));
+    debug_assert!(is_aligned(block_base_addr, align_of::<ArenaBlockHeader>()));
+    debug_assert!(is_aligned(block_base_addr, vm_page_size));
 
     let block_base = unsafe { NonNull::new_unchecked(block) };
 
@@ -979,19 +1058,28 @@ unsafe fn nz(addr: usize) -> NonZeroUsize {
     unsafe { NonZeroUsize::new_unchecked(addr) }
 }
 
-fn align_to(addr: usize, align: usize) -> usize {
+fn align(addr: usize, align: usize) -> usize {
     debug_assert!(align > 0);
     debug_assert!(align.is_power_of_two());
 
-    // Layout::from_size_align says that size, rounded up to the nearest multiple of align, must
-    // not overflow isize. This means that align can be at most 1<<62 (on platforms with 64-bit
-    // usize/isize).
-    //
-    // Generalized, align always has to be:
+    // Make sure we do not overflow isize.
+    debug_assert!(addr <= 1 << (usize::BITS - 2));
     debug_assert!(align <= 1 << (usize::BITS - 2));
 
     let mask = align - 1;
     (addr + mask) & !mask
+}
+
+fn is_aligned(addr: usize, align: usize) -> bool {
+    debug_assert!(align > 0);
+    debug_assert!(align.is_power_of_two());
+
+    // Make sure we do not overflow isize.
+    debug_assert!(addr <= 1 << (usize::BITS - 2));
+    debug_assert!(align <= 1 << (usize::BITS - 2));
+
+    let mask = align - 1;
+    addr == addr & !mask
 }
 
 #[cfg(test)]
@@ -1011,37 +1099,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_align_to() {
-        assert!(align_to(1, 1) == 1);
-        assert!(align_to(1, 2) == 2);
-        assert!(align_to(1, 4) == 4);
-        assert!(align_to(1, 8) == 8);
+    fn test_align() {
+        assert!(align(1, 1) == 1);
+        assert!(align(1, 2) == 2);
+        assert!(align(1, 4) == 4);
+        assert!(align(1, 8) == 8);
 
-        assert!(align_to(2, 1) == 2);
-        assert!(align_to(2, 2) == 2);
-        assert!(align_to(2, 4) == 4);
-        assert!(align_to(2, 8) == 8);
+        assert!(align(2, 1) == 2);
+        assert!(align(2, 2) == 2);
+        assert!(align(2, 4) == 4);
+        assert!(align(2, 8) == 8);
 
-        assert!(align_to(3, 1) == 3);
-        assert!(align_to(3, 2) == 4);
-        assert!(align_to(3, 4) == 4);
-        assert!(align_to(3, 8) == 8);
+        assert!(align(3, 1) == 3);
+        assert!(align(3, 2) == 4);
+        assert!(align(3, 4) == 4);
+        assert!(align(3, 8) == 8);
 
-        assert!(align_to(4, 1) == 4);
-        assert!(align_to(4, 2) == 4);
-        assert!(align_to(4, 4) == 4);
-        assert!(align_to(4, 8) == 8);
+        assert!(align(4, 1) == 4);
+        assert!(align(4, 2) == 4);
+        assert!(align(4, 4) == 4);
+        assert!(align(4, 8) == 8);
 
-        assert!(align_to(5, 1) == 5);
-        assert!(align_to(5, 2) == 6);
-        assert!(align_to(5, 4) == 8);
-        assert!(align_to(5, 8) == 8);
+        assert!(align(5, 1) == 5);
+        assert!(align(5, 2) == 6);
+        assert!(align(5, 4) == 8);
+        assert!(align(5, 8) == 8);
     }
 
     #[test]
     fn test_arena_simple_usage() {
         let memory = allocate_memory_block(1 << 20, align_of::<ArenaBlockHeader>()); // Align for header, otherwise this is harder to test.
-        let arena = unsafe { Arena::with_memory_block(memory.ptr(), memory.len()).unwrap() };
+        let arena = unsafe { Arena::with_first_block(memory.ptr(), memory.len()).unwrap() };
         let mut expected_size = size_of::<ArenaBlockHeader>();
 
         assert!(arena.allocated_size() == expected_size);
@@ -1078,11 +1166,11 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_arena_with_memory_block() {
+    fn fuzz_arena_with_first_block() {
         let block_size = 2 << 30;
         let block_align = 1;
         let memory = allocate_memory_block(block_size, block_align);
-        let arena = unsafe { Arena::with_memory_block(memory.ptr(), memory.len()).unwrap() };
+        let arena = unsafe { Arena::with_first_block(memory.ptr(), memory.len()).unwrap() };
 
         if cfg!(miri) {
             fuzz_arena(arena, 500, 10);
@@ -1136,6 +1224,19 @@ mod tests {
                 )
                 .unwrap()
             };
+
+            if cfg!(miri) {
+                fuzz_arena(arena, 500, 10);
+            } else {
+                fuzz_arena(arena, 500, 50);
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_arena_with_block_allocator_chained() {
+        for block_size in [4 << 10, 16 << 10, 32 << 20, 256 << 20] {
+            let arena = unsafe { Arena::with_block_allocator(block_allocate, block_free, block_size, true).unwrap() };
 
             if cfg!(miri) {
                 fuzz_arena(arena, 500, 10);
@@ -1358,7 +1459,7 @@ mod tests {
         let block_size = 2 * allocation_count * allocation_size;
         let block_align = 16;
         let memory = allocate_memory_block(block_size, block_align);
-        let mut arena = unsafe { Arena::with_memory_block(memory.ptr(), memory.len()).unwrap() };
+        let mut arena = unsafe { Arena::with_first_block(memory.ptr(), memory.len()).unwrap() };
 
         let layout = Layout::from_size_align(allocation_size, allocation_align).unwrap();
 
@@ -1571,10 +1672,24 @@ mod tests {
 
     #[cfg(target_family = "unix")]
     fn vm_release(ptr: *mut c_void, size: usize) {
-        use libc::munmap;
-
         unsafe {
-            munmap(ptr, size);
+            libc::munmap(ptr, size);
+        }
+    }
+
+    fn block_allocate(size: usize) -> *mut c_void {
+        // This could have also been libc::malloc, but the global allocator works everywhere.
+        let layout = Layout::from_size_align(size, ARENA_HEADER_ALIGN).unwrap();
+        Global.allocate(layout).unwrap().as_ptr().cast()
+    }
+
+    fn block_free(ptr: *mut c_void, size: usize) {
+        // This could have also been libc::free, but the global allocator works everywhere.
+        if ptr != ptr::null_mut() {
+            let ptr: NonNull<u8> = NonNull::new(ptr.cast()).unwrap();
+            let layout = Layout::from_size_align(size, ARENA_HEADER_ALIGN).unwrap();
+
+            unsafe { Global.deallocate(ptr, layout) }
         }
     }
 

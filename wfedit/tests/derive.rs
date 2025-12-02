@@ -83,7 +83,7 @@ fn make_arena() -> Arena {
     let memory_ptr = NonNull::new(memory_slice.as_mut_ptr()).unwrap();
     let memory_len = memory_slice.len();
 
-    let arena_result = unsafe { Arena::with_memory_block(memory_ptr, memory_len) };
+    let arena_result = unsafe { Arena::with_first_block(memory_ptr, memory_len) };
 
     let arena = arena_result.unwrap();
 

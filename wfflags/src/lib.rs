@@ -11,29 +11,35 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned as _;
 
-// TODO(jt): @Correctness Add assertions against unknown bits in every operation. If we every
+// TODO(jt): #genflags @Cleanup Remove 'keep'. Instead add derive(flags), which takes the enum's numeric value
+// as left shift operand, generating a new type and automatically preserving the enum:
+//
+// #[derive(Flags)]
+// #[repr(u32)]
+// enum EntityType {
+//     Hero = 0,
+//     Monster = 1,
+// }
+//
+// Derive generates this:
+//
+// struct EntityTypeFlags(u32);
+// impl EntityTypeFlags {
+//     pub const Hero    = 1 << (EntityType::Hero as u32);
+//     pub const Monster = 1 << (EntityType::Monster as u32)
+// }
+//
+// If there's problems with making this a derive, just make it a full blown macro attribute: #[genflags("EntityTypeFlags")].
+//
+// TODO(jt): @Correctness Add assertions against unknown bits in every operation. If we ever
 // bytecast, or load bitflags from untrusted sources, we can at least learn about it in debug
 // builds.
 //
-// TODO(jt): Preserve attributes from enum variants.
+// TODO(jt): Preserve attributes from enum variants?  (Might be obsolete if we do #genflags)
+// TODO(jt): Preserve pub(whatever) from source item. (Might be obsolete if we do #genflags)
 //
-// TODO(jt): Add support for compound variants. Compound variants can have the form: X | Y | Z,
+// TODO(jt): Add support for compound variants to #[flags]. Compound variants can have the form: X | Y | Z,
 // where they always have to refer to an already defined literal variant.
-//
-// TODO(jt): We currently preserve all attrs from the source item and add repr(C) and our derives on
-// top. This should be customizable? We should at least be able to skip the derives such that the
-// programmer can insert their own:
-//
-// #[flags(u32, noderive)]
-// #[derive(Debug)]
-// enum Foo { X = 1 }
-//
-// TODO(jt): Preserve pub(whatever) from source item.
-//
-// TODO(jt): Make it possible to turn fmt::Display off with:
-//
-// #[flags(u32, nodisplay)]
-
 enum FlagsIntType {
     U8,
     U16,
@@ -460,6 +466,9 @@ fn flags_enum(
     // ignoring the enum's Default and generating empty flags. Should we force something more
     // explicit? Perhaps prohibiting enum #[default] altogether, so that if we want default, we have
     // to do a manual impl (but ideally we don't want it?)
+    //
+    // UPDATE: #genflags Disallow Default for #[flags]. Allow Default for #[genflags], but don't
+    // carry it over.
     let mut default_sources: Vec<TokenStream2> = Vec::new();
     if let Some(variant_index) = default_variant_index {
         let variant_ident = lit_variants[variant_index].0.clone();

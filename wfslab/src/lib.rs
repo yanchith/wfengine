@@ -24,37 +24,9 @@ struct Slab<T, const N: usize> {
     data: [MaybeUninit<T>; N],
 }
 
-#[repr(C)]
-// Our Default location is 0-0. Analogously, 0 is the default usize, and it is a valid index for some arrays.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[derive(bytemuck::AnyBitPattern, bytemuck::NoUninit)]
-pub struct SlabLoc {
-    pub slab_index: u32,
-    pub slot_index: u32,
-}
-
-impl SlabLoc {
-    pub const ZERO: SlabLoc = SlabLoc {
-        slab_index: 0,
-        slot_index: 0,
-    };
-}
-
-impl fmt::Debug for SlabLoc {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}-{}", self.slab_index, self.slot_index)
-    }
-}
-
-impl fmt::Display for SlabLoc {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}-{}", self.slab_index, self.slot_index)
-    }
-}
-
 pub struct SlabArray<T, A: Allocator + Clone, const N: usize = 128> {
     // TODO(jt): @Speed JAI's Bucket_Array tracks two things we don't (see its code below), and
-    // therefore has faster insertion:
+    // therefore likely has faster insertion:
     //
     // 1) 'unfull_buckets', so that it can instantly find a bucket to insert to.
     //
@@ -77,6 +49,11 @@ pub struct SlabArray<T, A: Allocator + Clone, const N: usize = 128> {
     // itself, or store the "unfull bit" in the pointer itself (if we force slab alignment to at
     // least 2). This way we don't have to load the bucket to see if it has space. We could even
     // check multiple buckets with SIMD.
+    //
+    // Alternatively, we could have a freelist just for insertion (we'd keep the occupancy masks),
+    // and would thus have the answer almost instantly. We either insert to the place where the
+    // freelist says, or we insert at the end. However, the minimum size of T will have to be usize,
+    // so that the freelist can be stored inline.
     len: usize,
     allocator: A,
 
@@ -115,17 +92,8 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     pub fn with_capacity_in(capacity: usize, allocator: A) -> Self {
         // We don't support zero-sized types.
         const { assert!(size_of::<T>() > 0) };
-
-        // Because our location type stores indices as u32, check ahead of time,
-        // if we can represent all indices.
-        const {
-            if usize::BITS > u32::BITS {
-                assert!(N <= u32::MAX as usize);
-            }
-        }
-
-        // We only support power of two N, because that allows us to efficiently compute SlabLocs
-        // out out of indices.
+        // We only support power of two N, because that allows us to avoid idiv when computing
+        // locations out of indices.
         const { assert!(usize::is_power_of_two(N)) };
 
         let slabs_capacity = capacity / N + usize::from(capacity % N != 0);
@@ -182,12 +150,8 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     }
 
     #[inline]
-    pub fn reserve_for_loc(&mut self, loc: SlabLoc) {
-        let slab_index = loc.slab_index as usize;
-        let slot_index = loc.slot_index as usize;
-
-        assert!(slot_index < N);
-
+    pub fn reserve_for_index(&mut self, index: usize) {
+        let (slab_index, _) = index_to_location::<N>(index);
         if slab_index >= self.slabs.len() {
             let additional_slabs_capacity = slab_index - self.slabs.len() + 1;
 
@@ -231,16 +195,14 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     }
 
     #[inline]
-    pub fn find_next_unoccupied_loc(&self) -> Option<SlabLoc> {
+    pub fn find_next_unoccupied_index(&self) -> Option<usize> {
         let mut slab_index = 0;
         let mut slab_ptr: *mut Slab<T, N> = ptr::null_mut();
 
         for (index, &slab) in self.slabs.iter().enumerate() {
             let slab_ref = unsafe { slab.as_ref() };
             if slab_ref.len < N {
-                // Should be ok to cast, because allocate_slab checks, whether we can contain the
-                // slab_index in a u32.
-                slab_index = index as u32;
+                slab_index = index;
                 slab_ptr = slab.as_ptr();
 
                 break;
@@ -266,27 +228,23 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
         }
 
         debug_assert!(slot_index.is_some());
+
         if let Some(slot_index) = slot_index {
-            Some(SlabLoc {
-                slab_index,
-                slot_index: slot_index as u32,
-            })
+            Some(location_to_index::<N>(slab_index, slot_index))
         } else {
             None
         }
     }
 
     #[inline]
-    pub fn push(&mut self, value: T) -> SlabLoc {
-        let mut slab_index = 0;
+    pub fn push(&mut self, value: T) -> usize {
+        let mut slab_index: usize = 0;
         let mut slab_ptr: *mut Slab<T, N> = ptr::null_mut();
 
         for (index, &slab) in self.slabs.iter().enumerate() {
             let slab_ref = unsafe { slab.as_ref() };
             if slab_ref.len < N {
-                // Should be ok to cast, because allocate_slab checks, whether we can contain the
-                // slab_index in a u32.
-                slab_index = index as u32;
+                slab_index = index;
                 slab_ptr = slab.as_ptr();
 
                 break;
@@ -298,8 +256,7 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
         if slab_ptr == ptr::null_mut() {
             let slabs_len = self.slabs.len();
 
-            // allocate_slab below panics, if u32 can't hold the new index.
-            slab_index = slabs_len as u32;
+            slab_index = slabs_len;
             slab_ptr = allocate_slab(self.allocator.clone(), &mut self.slabs);
         }
 
@@ -323,18 +280,12 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
 
         self.len += 1;
 
-        SlabLoc {
-            slab_index,
-            // This cast should be ok, because we statically check that slot
-            // indices fit in u32.
-            slot_index: slot_index as u32,
-        }
+        location_to_index::<N>(slab_index, slot_index)
     }
 
     #[inline]
-    pub fn insert(&mut self, loc: SlabLoc, value: T) -> Option<T> {
-        let slab_index = loc.slab_index as usize;
-        let slot_index = loc.slot_index as usize;
+    pub fn insert(&mut self, index: usize, value: T) -> Option<T> {
+        let (slab_index, slot_index) = index_to_location::<N>(index);
 
         let mut slab = self.slabs[slab_index];
         let slab_mut = unsafe { slab.as_mut() };
@@ -359,14 +310,8 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     }
 
     #[inline]
-    pub fn get_by_index(&self, index: usize) -> Option<&T> {
-        // Even if the resulting indices don't fit u32, it doesn't really matter, since we index by usize internally.
-        //
-        // TODO(jt): @Speed idiv is slow, but we could const assert that N is a power of two and
-        // turn the divide into a shift and the modulo into a mask.
-        let slab_index = index / N;
-        let slot_index = index % N;
-
+    pub fn get(&self, index: usize) -> Option<&T> {
+        let (slab_index, slot_index) = index_to_location::<N>(index);
         match self.slabs.get(slab_index) {
             Some(slab) => {
                 let slab_ref = unsafe { slab.as_ref() };
@@ -389,14 +334,8 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     }
 
     #[inline]
-    pub fn get_by_index_mut(&mut self, index: usize) -> Option<&mut T> {
-        // Even if the resulting indices don't fit u32, it doesn't really matter, since we index by usize internally.
-        //
-        // TODO(jt): @Speed idiv is slow, but we could const assert that N is a power of two and
-        // turn the divide into a shift and the modulo into a mask.
-        let slab_index = index / N;
-        let slot_index = index % N;
-
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        let (slab_index, slot_index) = index_to_location::<N>(index);
         match self.slabs.get_mut(slab_index) {
             Some(slab) => {
                 let slab_mut = unsafe { slab.as_mut() };
@@ -419,58 +358,10 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     }
 
     #[inline]
-    pub fn get(&self, loc: SlabLoc) -> Option<&T> {
-        match self.slabs.get(loc.slab_index as usize) {
+    pub fn remove(&mut self, index: usize) -> Option<T> {
+        let (slab_index, slot_index) = index_to_location::<N>(index);
+        match self.slabs.get_mut(slab_index) {
             Some(slab) => {
-                let slot_index = loc.slot_index as usize;
-                let slab_ref = unsafe { slab.as_ref() };
-                match slab_ref.mask.get(slot_index) {
-                    Some(mask) => {
-                        if *mask {
-                            let slot = unsafe { slab_ref.data.get_unchecked(slot_index) };
-                            let value_ref = unsafe { slot.assume_init_ref() };
-
-                            Some(value_ref)
-                        } else {
-                            None
-                        }
-                    }
-                    None => None,
-                }
-            }
-            None => None,
-        }
-    }
-
-    #[inline]
-    pub fn get_mut(&mut self, loc: SlabLoc) -> Option<&mut T> {
-        match self.slabs.get_mut(loc.slab_index as usize) {
-            Some(slab) => {
-                let slot_index = loc.slot_index as usize;
-                let slab_mut = unsafe { slab.as_mut() };
-                match slab_mut.mask.get(slot_index) {
-                    Some(mask) => {
-                        if *mask {
-                            let slot = unsafe { slab_mut.data.get_unchecked_mut(slot_index) };
-                            let value_mut = unsafe { slot.assume_init_mut() };
-
-                            Some(value_mut)
-                        } else {
-                            None
-                        }
-                    }
-                    None => None,
-                }
-            }
-            None => None,
-        }
-    }
-
-    #[inline]
-    pub fn remove(&mut self, loc: SlabLoc) -> Option<T> {
-        match self.slabs.get_mut(loc.slab_index as usize) {
-            Some(slab) => {
-                let slot_index = loc.slot_index as usize;
                 let slab_mut = unsafe { slab.as_mut() };
                 match slab_mut.mask.get_mut(slot_index) {
                     Some(mask) => {
@@ -498,28 +389,22 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
     #[inline]
     pub fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(SlabLoc, &T) -> bool,
+        F: FnMut(usize, &T) -> bool,
     {
-        for (index, slab) in &mut self.slabs.iter_mut().enumerate() {
+        for (slab_index, slab) in &mut self.slabs.iter_mut().enumerate() {
             let slab_mut = unsafe { slab.as_mut() };
 
-            for i in 0..N {
-                if slab_mut.mask[i] {
-                    let slot = unsafe { slab_mut.data.get_unchecked_mut(i) };
+            for slot_index in 0..N {
+                if slab_mut.mask[slot_index] {
+                    let slot = unsafe { slab_mut.data.get_unchecked_mut(slot_index) };
                     let value_mut = unsafe { slot.assume_init_mut() };
 
-                    let loc = SlabLoc {
-                        // Casts should be okay, because we check that slot_index fits u32 when
-                        // constructing the SlabArray, and we aren't allowing more than u32::MAX-1
-                        // slabs in allocate_slab.
-                        slab_index: index as u32,
-                        slot_index: i as u32,
-                    };
+                    let index = location_to_index::<N>(slab_index, slot_index);
 
-                    if !f(loc, value_mut) {
+                    if !f(index, value_mut) {
                         // If the destructor panics, leak the data instead of
                         // trying to run the destructor again.
-                        slab_mut.mask[i] = false;
+                        slab_mut.mask[slot_index] = false;
                         slab_mut.len -= 1;
 
                         self.len -= 1;
@@ -721,32 +606,18 @@ impl<T, A: Allocator + Clone, const N: usize> Index<usize> for SlabArray<T, A, N
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
-        self.get_by_index(index).unwrap()
+        self.get(index).unwrap()
     }
 }
 
 impl<T, A: Allocator + Clone, const N: usize> IndexMut<usize> for SlabArray<T, A, N> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        self.get_by_index_mut(index).unwrap()
-    }
-}
-
-impl<T, A: Allocator + Clone, const N: usize> Index<SlabLoc> for SlabArray<T, A, N> {
-    type Output = T;
-
-    fn index(&self, index: SlabLoc) -> &Self::Output {
-        self.get(index).unwrap()
-    }
-}
-
-impl<T, A: Allocator + Clone, const N: usize> IndexMut<SlabLoc> for SlabArray<T, A, N> {
-    fn index_mut(&mut self, index: SlabLoc) -> &mut Self::Output {
         self.get_mut(index).unwrap()
     }
 }
 
 impl<'a, T, A: Allocator + Clone, const N: usize> IntoIterator for &'a SlabArray<T, A, N> {
-    type Item = (SlabLoc, &'a T);
+    type Item = (usize, &'a T);
     type IntoIter = Iter<'a, T, N>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -755,7 +626,7 @@ impl<'a, T, A: Allocator + Clone, const N: usize> IntoIterator for &'a SlabArray
 }
 
 impl<'a, T, A: Allocator + Clone, const N: usize> IntoIterator for &'a mut SlabArray<T, A, N> {
-    type Item = (SlabLoc, &'a mut T);
+    type Item = (usize, &'a mut T);
     type IntoIter = IterMut<'a, T, N>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -774,7 +645,7 @@ pub struct Iter<'a, T, const N: usize> {
 }
 
 impl<'a, T, const N: usize> Iterator for Iter<'a, T, N> {
-    type Item = (SlabLoc, &'a T);
+    type Item = (usize, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(slab) = self.slabs.get(self.slab_index) {
@@ -789,12 +660,10 @@ impl<'a, T, const N: usize> Iterator for Iter<'a, T, N> {
                         let slot = &slab_ref.data[i];
                         let value_ref = unsafe { slot.assume_init_ref() };
 
-                        // Casts should be safe, because we never insert more than
-                        // u32::MAX-1 slabs and we check that N also fits in u32.
-                        let slab_index = self.slab_index as u32;
-                        let slot_index = i as u32;
+                        let slab_index = self.slab_index;
+                        let slot_index = i;
 
-                        return Some((SlabLoc { slab_index, slot_index }, value_ref));
+                        return Some((location_to_index::<N>(slab_index, slot_index), value_ref));
                     }
                 }
             }
@@ -825,7 +694,7 @@ pub struct IterMut<'a, T, const N: usize> {
 }
 
 impl<'a, T, const N: usize> Iterator for IterMut<'a, T, N> {
-    type Item = (SlabLoc, &'a mut T);
+    type Item = (usize, &'a mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(slab) = self.slabs.get_mut(self.slab_index) {
@@ -840,12 +709,10 @@ impl<'a, T, const N: usize> Iterator for IterMut<'a, T, N> {
                         let slot = &mut slab_mut.data[i];
                         let value_mut = unsafe { slot.assume_init_mut() };
 
-                        // Casts should be safe, because we never insert more than
-                        // u32::MAX-1 slabs and we check that N also fits in u32.
-                        let slab_index = self.slab_index as u32;
-                        let slot_index = i as u32;
+                        let slab_index = self.slab_index;
+                        let slot_index = i;
 
-                        return Some((SlabLoc { slab_index, slot_index }, value_mut));
+                        return Some((location_to_index::<N>(slab_index, slot_index), value_mut));
                     }
                 }
             }
@@ -869,13 +736,6 @@ fn allocate_slab<T, A: Allocator, const N: usize>(
     allocator: A,
     slabs: &mut Vec<NonNull<Slab<T, N>>, A>,
 ) -> *mut Slab<T, N> {
-    // Check if the new slab index fits in u32, if usize is larger than u32 and Vec::push below
-    // wouldn't catch the overflow. For smaller usizes, we delegate the panic to Vec::push.
-    if usize::BITS > u32::BITS {
-        let new_slab_index = slabs.len();
-        assert!(new_slab_index < u32::MAX as usize);
-    }
-
     let slab_layout = Layout::new::<Slab<T, N>>();
     match allocator.allocate(slab_layout) {
         Ok(ptr) => {
@@ -915,6 +775,30 @@ fn clone_slab<T: Clone, const N: usize>(dst: *mut Slab<T, N>, src: NonNull<Slab<
     }
 }
 
+const fn index_to_location<const N: usize>(index: usize) -> (usize, usize) {
+    const { assert!(usize::is_power_of_two(N)) };
+
+    let shift = const { usize::trailing_zeros(N) };
+
+    let slab_index = index >> shift;
+    let slot_index = index & (N - 1);
+
+    debug_assert!(slot_index < N);
+
+    (slab_index, slot_index)
+}
+
+const fn location_to_index<const N: usize>(slab_index: usize, slot_index: usize) -> usize {
+    const { assert!(usize::is_power_of_two(N)) };
+
+    let shift = const { usize::trailing_zeros(N) };
+
+    debug_assert!(slot_index < N);
+    let index = slot_index + (slab_index << shift);
+
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::alloc::Global;
@@ -933,73 +817,53 @@ mod tests {
         assert!(s.len() == 0);
         assert!(s.capacity() == 0);
 
-        let loc0 = s.push(0);
-        assert!(
-            loc0 == SlabLoc {
-                slab_index: 0,
-                slot_index: 0
-            }
-        );
+        let index0 = s.push(0);
+        assert!(index0 == 0);
         assert!(s.len() == 1);
         assert!(s.capacity() == SLAB_SIZE);
 
-        let loc1 = s.push(1);
-        assert!(
-            loc1 == SlabLoc {
-                slab_index: 0,
-                slot_index: 1
-            }
-        );
+        let index1 = s.push(1);
+        assert!(index1 == 1);
         assert!(s.len() == 2);
         assert!(s.capacity() == SLAB_SIZE);
 
-        let loc2 = s.push(2);
-        assert!(
-            loc2 == SlabLoc {
-                slab_index: 1,
-                slot_index: 0
-            }
-        );
+        let index2 = s.push(2);
+        assert!(index2 == 2);
         assert!(s.len() == 3);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        let loc3 = s.push(3);
-        assert!(
-            loc3 == SlabLoc {
-                slab_index: 1,
-                slot_index: 1
-            }
-        );
+        let index3 = s.push(3);
+        assert!(index3 == 3);
         assert!(s.len() == 4);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        assert!(s.get(loc0) == Some(&0));
-        assert!(s.get(loc1) == Some(&1));
-        assert!(s.get(loc2) == Some(&2));
-        assert!(s.get(loc3) == Some(&3));
+        assert!(s.get(index0) == Some(&0));
+        assert!(s.get(index1) == Some(&1));
+        assert!(s.get(index2) == Some(&2));
+        assert!(s.get(index3) == Some(&3));
 
         {
-            let value = s.get_mut(loc0).unwrap();
+            let value = s.get_mut(index0).unwrap();
             *value = 1;
         }
 
-        assert!(s.get(loc0) == Some(&1));
+        assert!(s.get(index0) == Some(&1));
 
-        assert!(s.remove(loc0) == Some(1));
+        assert!(s.remove(index0) == Some(1));
         assert!(s.len() == 3);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        assert!(s.remove(loc2) == Some(2));
+        assert!(s.remove(index2) == Some(2));
         assert!(s.len() == 2);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        assert!(s.get(loc0) == None);
-        assert!(s.get(loc1) == Some(&1));
-        assert!(s.get(loc2) == None);
-        assert!(s.get(loc3) == Some(&3));
+        assert!(s.get(index0) == None);
+        assert!(s.get(index1) == Some(&1));
+        assert!(s.get(index2) == None);
+        assert!(s.get(index3) == Some(&3));
 
-        let loc00 = s.push(10);
-        assert!(loc00 == loc0);
+        let index00 = s.push(10);
+        assert!(index00 == index0);
         assert!(s.len() == 3);
         assert!(s.capacity() == 2 * SLAB_SIZE);
     }
@@ -1011,54 +875,42 @@ mod tests {
         let mut s: SlabArray<i32, _, SLAB_SIZE> = SlabArray::new_in(Global);
         assert!(s.len() == 0);
         assert!(s.capacity() == 0);
-        assert!(s.find_next_unoccupied_loc() == None);
+        assert!(s.find_next_unoccupied_index() == None);
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let _loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
-        let _loc3 = SlabLoc {
-            slab_index: 1,
-            slot_index: 1,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let _index2 = 2;
+        let _index3 = 3;
 
         s.reserve(0);
         assert!(s.len() == 0);
         assert!(s.capacity() == 0);
-        assert!(s.find_next_unoccupied_loc() == None);
+        assert!(s.find_next_unoccupied_index() == None);
 
         s.reserve(1);
         assert!(s.len() == 0);
         assert!(s.capacity() == 2);
-        assert!(s.find_next_unoccupied_loc() == Some(loc0));
+        assert!(s.find_next_unoccupied_index() == Some(index0));
 
         s.reserve(2);
         assert!(s.len() == 0);
         assert!(s.capacity() == 2);
-        assert!(s.find_next_unoccupied_loc() == Some(loc0));
+        assert!(s.find_next_unoccupied_index() == Some(index0));
 
         s.reserve(1);
         assert!(s.len() == 0);
         assert!(s.capacity() == 2);
-        assert!(s.find_next_unoccupied_loc() == Some(loc0));
+        assert!(s.find_next_unoccupied_index() == Some(index0));
 
-        s.insert(loc0, 0);
+        s.insert(index0, 0);
         assert!(s.len() == 1);
         assert!(s.capacity() == 2);
-        assert!(s.find_next_unoccupied_loc() == Some(loc1));
+        assert!(s.find_next_unoccupied_index() == Some(index1));
 
         s.reserve(2);
         assert!(s.len() == 1);
         assert!(s.capacity() == 4);
-        assert!(s.find_next_unoccupied_loc() == Some(loc1));
+        assert!(s.find_next_unoccupied_index() == Some(index1));
     }
 
     #[test]
@@ -1068,52 +920,40 @@ mod tests {
         let mut s: SlabArray<i32, _, SLAB_SIZE> = SlabArray::new_in(Global);
         assert!(s.len() == 0);
         assert!(s.capacity() == 0);
-        assert!(s.find_next_unoccupied_loc() == None);
+        assert!(s.find_next_unoccupied_index() == None);
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
-        let loc3 = SlabLoc {
-            slab_index: 1,
-            slot_index: 1,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let index2 = 2;
+        let index3 = 3;
 
-        s.reserve_for_loc(loc0);
-        assert!(s.find_next_unoccupied_loc() == Some(loc0));
+        s.reserve_for_index(index0);
+        assert!(s.find_next_unoccupied_index() == Some(index0));
         assert!(s.len() == 0);
         assert!(s.capacity() == SLAB_SIZE);
 
-        s.insert(loc0, 0);
-        assert!(s.find_next_unoccupied_loc() == Some(loc1));
+        s.insert(index0, 0);
+        assert!(s.find_next_unoccupied_index() == Some(index1));
         assert!(s.len() == 1);
         assert!(s.capacity() == SLAB_SIZE);
 
-        s.reserve_for_loc(loc2);
-        assert!(s.find_next_unoccupied_loc() == Some(loc1));
+        s.reserve_for_index(index2);
+        assert!(s.find_next_unoccupied_index() == Some(index1));
         assert!(s.len() == 1);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        s.insert(loc1, 1);
-        assert!(s.find_next_unoccupied_loc() == Some(loc2));
+        s.insert(index1, 1);
+        assert!(s.find_next_unoccupied_index() == Some(index2));
         assert!(s.len() == 2);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        s.insert(loc2, 2);
-        assert!(s.find_next_unoccupied_loc() == Some(loc3));
+        s.insert(index2, 2);
+        assert!(s.find_next_unoccupied_index() == Some(index3));
         assert!(s.len() == 3);
         assert!(s.capacity() == 2 * SLAB_SIZE);
 
-        assert!(s.remove(loc1) == Some(1));
-        assert!(s.find_next_unoccupied_loc() == Some(loc1));
+        assert!(s.remove(index1) == Some(1));
+        assert!(s.find_next_unoccupied_index() == Some(index1));
         assert!(s.len() == 2);
         assert!(s.capacity() == 2 * SLAB_SIZE);
     }
@@ -1124,13 +964,7 @@ mod tests {
         const SLAB_SIZE: usize = 2;
 
         let mut s: SlabArray<i32, _, SLAB_SIZE> = SlabArray::new_in(Global);
-        s.insert(
-            SlabLoc {
-                slab_index: 0,
-                slot_index: 0,
-            },
-            42,
-        );
+        s.insert(0, 42);
     }
 
     #[test]
@@ -1140,59 +974,38 @@ mod tests {
         let s: SlabArray<i32, _, SLAB_SIZE> = SlabArray::with_capacity_in(0, Global);
         assert!(s.len() == 0);
         assert!(s.capacity() == 0);
-        assert!(s.find_next_unoccupied_loc() == None);
+        assert!(s.find_next_unoccupied_index() == None);
 
         drop(s);
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let index2 = 2;
 
         let mut s: SlabArray<i32, _, SLAB_SIZE> = SlabArray::with_capacity_in(3, Global);
         assert!(s.len() == 0);
         assert!(s.capacity() == 4);
-        assert!(s.find_next_unoccupied_loc() == Some(loc0));
+        assert!(s.find_next_unoccupied_index() == Some(index0));
 
-        s.insert(loc1, 1);
+        s.insert(index1, 1);
         assert!(s.len() == 1);
         assert!(s.capacity() == 4);
-        assert!(s.find_next_unoccupied_loc() == Some(loc0));
+        assert!(s.find_next_unoccupied_index() == Some(index0));
 
         s.push(0);
         assert!(s.len() == 2);
         assert!(s.capacity() == 4);
-        assert!(s.find_next_unoccupied_loc() == Some(loc2));
+        assert!(s.find_next_unoccupied_index() == Some(index2));
     }
 
     #[test]
     fn test_slab_clone() {
         const SLAB_SIZE: usize = 2;
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
-        let loc3 = SlabLoc {
-            slab_index: 1,
-            slot_index: 1,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let index2 = 2;
+        let index3 = 3;
 
         let mut s1: SlabArray<i32, _, SLAB_SIZE> = SlabArray::new_in(Global);
         s1.push(0);
@@ -1201,55 +1014,43 @@ mod tests {
 
         assert!(s1.len() == 3);
         assert!(s1.capacity() == 4);
-        assert!(s1.find_next_unoccupied_loc() == Some(loc3));
+        assert!(s1.find_next_unoccupied_index() == Some(index3));
 
         let s2 = s1.clone();
         assert!(s2.len() == 3);
         assert!(s2.capacity() == 4);
-        assert!(s2.find_next_unoccupied_loc() == Some(loc3));
+        assert!(s2.find_next_unoccupied_index() == Some(index3));
 
-        assert!(s2.get(loc0) == Some(&0));
-        assert!(s2.get(loc1) == Some(&1));
-        assert!(s2.get(loc2) == Some(&2));
-        assert!(s2.get(loc3) == None);
+        assert!(s2.get(index0) == Some(&0));
+        assert!(s2.get(index1) == Some(&1));
+        assert!(s2.get(index2) == Some(&2));
+        assert!(s2.get(index3) == None);
 
-        assert!(s1.get(loc0) == s2.get(loc0));
-        assert!(s1.get(loc1) == s2.get(loc1));
-        assert!(s1.get(loc2) == s2.get(loc2));
-        assert!(s1.get(loc3) == s2.get(loc3));
+        assert!(s1.get(index0) == s2.get(index0));
+        assert!(s1.get(index1) == s2.get(index1));
+        assert!(s1.get(index2) == s2.get(index2));
+        assert!(s1.get(index3) == s2.get(index3));
 
         drop(s1);
 
         assert!(s2.len() == 3);
         assert!(s2.capacity() == 4);
-        assert!(s2.find_next_unoccupied_loc() == Some(loc3));
+        assert!(s2.find_next_unoccupied_index() == Some(index3));
 
-        assert!(s2.get(loc0) == Some(&0));
-        assert!(s2.get(loc1) == Some(&1));
-        assert!(s2.get(loc2) == Some(&2));
-        assert!(s2.get(loc3) == None);
+        assert!(s2.get(index0) == Some(&0));
+        assert!(s2.get(index1) == Some(&1));
+        assert!(s2.get(index2) == Some(&2));
+        assert!(s2.get(index3) == None);
     }
 
     #[test]
     fn test_slab_clone_from() {
         const SLAB_SIZE: usize = 2;
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
-        let loc3 = SlabLoc {
-            slab_index: 1,
-            slot_index: 1,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let index2 = 2;
+        let index3 = 3;
 
         let mut s1: SlabArray<i32, _, SLAB_SIZE> = SlabArray::new_in(Global);
         s1.push(0);
@@ -1258,38 +1059,38 @@ mod tests {
 
         assert!(s1.len() == 3);
         assert!(s1.capacity() == 4);
-        assert!(s1.find_next_unoccupied_loc() == Some(loc3));
+        assert!(s1.find_next_unoccupied_index() == Some(index3));
 
         let mut s2: SlabArray<i32, _, SLAB_SIZE> = SlabArray::with_capacity_in(69, Global);
         assert!(s2.len() == 0);
         assert!(s2.capacity() == 70);
-        assert!(s2.find_next_unoccupied_loc() == Some(loc0));
+        assert!(s2.find_next_unoccupied_index() == Some(index0));
 
         s2.clone_from(&s1);
         assert!(s2.len() == 3);
         assert!(s2.capacity() == 70);
-        assert!(s2.find_next_unoccupied_loc() == Some(loc3));
+        assert!(s2.find_next_unoccupied_index() == Some(index3));
 
-        assert!(s2.get(loc0) == Some(&0));
-        assert!(s2.get(loc1) == Some(&1));
-        assert!(s2.get(loc2) == Some(&2));
-        assert!(s2.get(loc3) == None);
+        assert!(s2.get(index0) == Some(&0));
+        assert!(s2.get(index1) == Some(&1));
+        assert!(s2.get(index2) == Some(&2));
+        assert!(s2.get(index3) == None);
 
-        assert!(s1.get(loc0) == s2.get(loc0));
-        assert!(s1.get(loc1) == s2.get(loc1));
-        assert!(s1.get(loc2) == s2.get(loc2));
-        assert!(s1.get(loc3) == s2.get(loc3));
+        assert!(s1.get(index0) == s2.get(index0));
+        assert!(s1.get(index1) == s2.get(index1));
+        assert!(s1.get(index2) == s2.get(index2));
+        assert!(s1.get(index3) == s2.get(index3));
 
         drop(s1);
 
         assert!(s2.len() == 3);
         assert!(s2.capacity() == 70);
-        assert!(s2.find_next_unoccupied_loc() == Some(loc3));
+        assert!(s2.find_next_unoccupied_index() == Some(index3));
 
-        assert!(s2.get(loc0) == Some(&0));
-        assert!(s2.get(loc1) == Some(&1));
-        assert!(s2.get(loc2) == Some(&2));
-        assert!(s2.get(loc3) == None);
+        assert!(s2.get(index0) == Some(&0));
+        assert!(s2.get(index1) == Some(&1));
+        assert!(s2.get(index2) == Some(&2));
+        assert!(s2.get(index3) == None);
     }
 
     #[test]
@@ -1375,55 +1176,40 @@ mod tests {
         s.push(3);
         s.push(4);
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
-        let loc3 = SlabLoc {
-            slab_index: 1,
-            slot_index: 1,
-        };
-        let loc4 = SlabLoc {
-            slab_index: 2,
-            slot_index: 0,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let index2 = 2;
+        let index3 = 3;
+        let index4 = 4;
 
-        let expected1 = [(loc0, 0), (loc1, 1), (loc2, 2), (loc3, 3), (loc4, 4)];
+        let expected1 = [(index0, 0), (index1, 1), (index2, 2), (index3, 3), (index4, 4)];
 
         assert!(s.len() == expected1.len());
-        for (i, (loc, &value)) in s.iter().enumerate() {
-            assert!(expected1[i] == (loc, value));
+        for (i, (index, &value)) in s.iter().enumerate() {
+            assert!(expected1[i] == (index, value));
         }
 
-        s.remove(loc1).unwrap();
-        s.remove(loc2).unwrap();
+        s.remove(index1).unwrap();
+        s.remove(index2).unwrap();
 
-        let expected2 = [(loc0, 0), (loc3, 3), (loc4, 4)];
+        let expected2 = [(index0, 0), (index3, 3), (index4, 4)];
 
         assert!(s.len() == expected2.len());
-        for (i, (loc, &value)) in s.iter().enumerate() {
-            assert!(expected2[i] == (loc, value));
+        for (i, (index, &value)) in s.iter().enumerate() {
+            assert!(expected2[i] == (index, value));
         }
 
-        for (loc, value) in s.iter_mut() {
-            if loc == loc3 {
+        for (index, value) in s.iter_mut() {
+            if index == index3 {
                 *value = 42;
             }
         }
 
-        let expected3 = [(loc0, 0), (loc3, 42), (loc4, 4)];
+        let expected3 = [(index0, 0), (index3, 42), (index4, 4)];
 
         assert!(s.len() == expected3.len());
-        for (i, (loc, &value)) in s.iter().enumerate() {
-            assert!(expected3[i] == (loc, value));
+        for (i, (index, &value)) in s.iter().enumerate() {
+            assert!(expected3[i] == (index, value));
         }
     }
 
@@ -1456,36 +1242,21 @@ mod tests {
         s.push(Counted::new(3));
         s.push(Counted::new(4));
 
-        let loc0 = SlabLoc {
-            slab_index: 0,
-            slot_index: 0,
-        };
-        let loc1 = SlabLoc {
-            slab_index: 0,
-            slot_index: 1,
-        };
-        let loc2 = SlabLoc {
-            slab_index: 1,
-            slot_index: 0,
-        };
-        let loc3 = SlabLoc {
-            slab_index: 1,
-            slot_index: 1,
-        };
-        let loc4 = SlabLoc {
-            slab_index: 2,
-            slot_index: 0,
-        };
+        let index0 = 0;
+        let index1 = 1;
+        let index2 = 2;
+        let index3 = 3;
+        let index4 = 4;
 
         assert!(s.len() == 5);
         assert!(s.capacity() == 6);
         assert!(COUNT.load(Ordering::Acquire) == 5);
 
-        assert!(s[loc0].0 == 0);
-        assert!(s[loc1].0 == 1);
-        assert!(s[loc2].0 == 2);
-        assert!(s[loc3].0 == 3);
-        assert!(s[loc4].0 == 4);
+        assert!(s[index0].0 == 0);
+        assert!(s[index1].0 == 1);
+        assert!(s[index2].0 == 2);
+        assert!(s[index3].0 == 3);
+        assert!(s[index4].0 == 4);
 
         s.retain(|_, value| value.0 % 2 == 1);
 
@@ -1493,11 +1264,11 @@ mod tests {
         assert!(s.capacity() == 6);
         assert!(COUNT.load(Ordering::Acquire) == 2);
 
-        assert!(s.get(loc0).is_none());
-        assert!(s[loc1].0 == 1);
-        assert!(s.get(loc2).is_none());
-        assert!(s[loc3].0 == 3);
-        assert!(s.get(loc4).is_none());
+        assert!(s.get(index0).is_none());
+        assert!(s[index1].0 == 1);
+        assert!(s.get(index2).is_none());
+        assert!(s[index3].0 == 3);
+        assert!(s.get(index4).is_none());
     }
 
     // This just exists so that we can run with miri every time, but if we are serious, we should be
@@ -1526,11 +1297,8 @@ mod tests {
         let mut r = Rand32::new(0);
         let mut s: SlabArray<i32, _, N> = SlabArray::new_in(Global);
 
-        fn rand_loc(r: &mut Rand32) -> SlabLoc {
-            SlabLoc {
-                slab_index: r.rand_u32() % 1000,
-                slot_index: r.rand_u32() % 1000,
-            }
+        fn random_index(r: &mut Rand32) -> usize {
+            r.rand_u32() as usize
         }
 
         // Try a lower iteration count when running with miri. It can be quite the wait.
@@ -1541,17 +1309,17 @@ mod tests {
                 }
 
                 1 => {
-                    let _ = s.get(rand_loc(&mut r));
+                    let _ = s.get(random_index(&mut r));
                 }
 
                 2 => {
-                    if let Some(value) = s.get_mut(rand_loc(&mut r)) {
+                    if let Some(value) = s.get_mut(random_index(&mut r)) {
                         *value = r.rand_i32();
                     }
                 }
 
                 3 => {
-                    let _ = s.remove(rand_loc(&mut r));
+                    let _ = s.remove(random_index(&mut r));
                 }
 
                 4 => {
@@ -1561,8 +1329,8 @@ mod tests {
                 }
 
                 5 => {
-                    for (loc, value) in s.iter_mut() {
-                        if (loc.slab_index + loc.slot_index) % 2 == 0 {
+                    for (index, value) in s.iter_mut() {
+                        if index % 2 == 0 {
                             *value = r.rand_i32();
                         }
                     }

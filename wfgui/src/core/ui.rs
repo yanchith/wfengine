@@ -13,7 +13,6 @@ use wfmath::Vec4;
 use wfmath::srgb_to_linear;
 use wfmath::vec2;
 use wfslab::SlabArray;
-use wfslab::SlabLoc;
 use wftime::Nanos;
 
 use crate::core::draw_list::Command;
@@ -153,31 +152,26 @@ pub enum CtrlFlags {
 macro_rules! id {
     ($loop_prefix:expr) => {
         $crate::CtrlId {
-            line: line!(),
-            loop_prefix: $loop_prefix,
             file: file!(),
+            line: line!(),
+            column: column!(),
+            loop_prefix: $loop_prefix,
         }
     };
 }
 
 // TODO(jt): @Speed @Memory Consider compressing this to 64 or 128 bits (currently is 192) by
 // hashing the source file.
-//
-// TODO(jt): @Correctness This ID still isn't as unique as we'd like, because someone can still
-// smuggle multiple of id!() calls onto the same line in the same file. Ideally, we want a
-// compile-time counter (like C has in unity builds, or like JAI has (if it doesn't reset across
-// modules)). A good thing about that would also be that we'd cut down the size of this struct,
-// storing just u32+u32 instead of u32+u32+pointer+usize. We could also try exploiting TypeId::of
-// inside macro, but that's u64+u64+u32 AND it is not guaranteed to be unique between crates.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CtrlId {
-    pub line: u32,
-    pub loop_prefix: u32,
     pub file: &'static str,
+    pub line: u32,
+    pub column: u32,
+    pub loop_prefix: u32,
 }
 
-static_assert!(size_of::<CtrlId>() == 24);
+static_assert!(size_of::<CtrlId>() == 32);
 static_assert!(align_of::<CtrlId>() == 8);
 
 #[repr(C, align(64))]
@@ -195,7 +189,7 @@ struct CtrlNode {
     child_idx: Option<usize>,
     sibling_idx: Option<usize>,
 
-    strings_idx: Option<SlabLoc>,
+    strings_idx: Option<usize>,
 
     first_frame: u32,
     // Deallocate if not current.

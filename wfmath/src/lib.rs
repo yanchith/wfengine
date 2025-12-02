@@ -19,8 +19,8 @@ pub use crate::plane::*;
 
 // XXX: Do the TODOs below.
 //
-// TODO(jt): Think about boxes and iboxes being plane data (deserializable), represented with with
-// min and max, and flipping them on demand, if needed.
+// TODO(jt): Think about boxes and iboxes being plain data (deserializable), and flipping width and
+// height on demand, if needed.
 //
 // Yes, this can potentially mean we pay the price of conditioning the data many times, but it also
 // has upsides:

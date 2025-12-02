@@ -494,6 +494,31 @@ impl Drop for Block {
             // https://github.com/rust-lang/rust/issues/54726
             // https://github.com/rust-lang/rust/issues/54727
             // https://github.com/rust-lang/rust/issues/41430
+            //
+            // Note that the current approach (hashing zone labels and runtime checking) does have
+            // benefits over the fully automated one, such as being able to profile across multiple
+            // crates. Even if Rust gets functioning full-crate proc macros, they will only work
+            // across a single crate, meaning we would have to resort to something like we have now
+            // to profile functions in multiple crates, unless Rust also gets some sort of unity
+            // build (unlikely). We could sort of get by by putting the entire application code in a
+            // single crate, but then we couldn't profile the platform/renderer code...
+            //
+            // Maybe there could be a workaround to generate the slot in the profiler memory in the
+            // main crate, and use that slot in other crate? Something like:
+            //
+            // game crate:
+            //
+            // pub PROF_INDEX_RENDERER_SUBMIT: usize = profiling_index!("renderer_submit");
+            //
+            // renderer crate:
+            //
+            // use game::PROF_INDEX_RENDERER_SUBMIT;
+            //
+            // fn submit() {
+            //     profile_zone!(PROF_INDEX_RENDERER_SUBMIT);
+            //     ...
+            // }
+            //
             (*zone).label = self.zone_label;
             (*zone).tsc_elapsed_incl = self.tsc_elapsed_incl.wrapping_add(tsc_elapsed);
             (*zone).tsc_elapsed_excl = (*zone).tsc_elapsed_excl.wrapping_add(tsc_elapsed);

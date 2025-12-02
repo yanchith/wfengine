@@ -11,8 +11,8 @@ workspace = true
 # Any library you add here has to be #![no_std] (same as this crate), otherwise
 # the game core will silently depend on Rust's std.
 [dependencies]
-bytemuck = { version = "1.23.1", features = ["derive"] }
-glam = { version = "0.30.4", default-features = false, features = ["libm", "bytemuck", "debug-glam-assert"] }
+bytemuck = { version = "1.24.0", features = ["derive"] }
+glam = { version = "0.30.9", default-features = false, features = ["libm", "bytemuck", "debug-glam-assert"] }
 wfcommon = { path = "../wfcommon" }
 # TODO(yan): @Cleanup Can we get rid of this? We currently use fabsf, powf,
 # roundf, cosf, truncf, sinf and atan2f. Except for the trig, these things
