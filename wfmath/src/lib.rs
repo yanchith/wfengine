@@ -17,10 +17,8 @@ pub use crate::ibox2::*;
 pub use crate::ibox3::*;
 pub use crate::plane::*;
 
-// XXX: Do the TODOs below.
-//
-// TODO(jt): Think about boxes and iboxes being plane data (deserializable), represented with with
-// min and max, and flipping them on demand, if needed.
+// XXX: Think about boxes and iboxes being plain data (deserializable), and flipping width and
+// height () on demand, if needed.
 //
 // Yes, this can potentially mean we pay the price of conditioning the data many times, but it also
 // has upsides:
@@ -28,8 +26,7 @@ pub use crate::plane::*;
 // - All fields could be public
 // - We wouldn't have to worry about checking invariants when deserializing.
 //
-// TODO(jt): Rename Box2 -> Rect (or AaRect?)
-// TODO(jt): Rename Box3 -> Box (or if that proves a terrble idea in Rust, then perhaps AaBox?)
+// While at it, also get rid of the CheckedBitPattern.
 
 #[inline]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {

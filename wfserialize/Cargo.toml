@@ -16,8 +16,9 @@ workspace = true
 # Any library you add here has to be #![no_std] (same as this crate), otherwise
 # the game core will silently depend on Rust's std.
 [dependencies]
-arrayvec = { version = "0.7.6", default-features = false }
-hashbrown = { version = "0.15.4", default-features = false, features = ["default-hasher", "nightly"] }
+hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher", "nightly"] }
+wfcommon = { path = "../wfcommon" }
+wfinlinevec = { path = "../wfinlinevec" }
 wfserialize_derive = { path = "../wfserialize_derive" }
 wfmath = { path = "../wfmath", optional = true }
 wfslab = { path = "../wfslab", optional = true }

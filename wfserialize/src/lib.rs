@@ -9,12 +9,9 @@ mod parser;
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::str;
-use core::str::FromStr;
 
-// TODO(jt): @Cleanup Don't use arrayvec and arraystring in the implementation, but implement
-// feature-gated serialization for them.
-use arrayvec::ArrayString;
-use arrayvec::ArrayVec;
+use wfinlinevec::InlineString;
+use wfinlinevec::InlineVec;
 pub use wfserialize_derive::Deserialize;
 pub use wfserialize_derive::Serialize;
 
@@ -109,6 +106,12 @@ impl Serialize for u32 {
 impl Serialize for u64 {
     fn serialize<A: Allocator>(&self, f: &mut fmt::Formatter<A>) {
         f.uint(*self)
+    }
+}
+
+impl Serialize for usize {
+    fn serialize<A: Allocator>(&self, f: &mut fmt::Formatter<A>) {
+        f.uint(u64::try_from(*self).unwrap())
     }
 }
 
@@ -239,25 +242,14 @@ impl Serialize for wftime::Nanos {
 }
 
 #[cfg(feature = "wfslab")]
-impl Serialize for wfslab::SlabLoc {
-    fn serialize<A: Allocator>(&self, f: &mut fmt::Formatter<A>) {
-        use core::fmt::Write;
-
-        let mut buf: ArrayString<256> = ArrayString::new();
-        write!(buf, "{}-{}", self.slab_index, self.slot_index).unwrap();
-        f.string(&buf);
-    }
-}
-
-#[cfg(feature = "wfslab")]
 impl<T: Serialize, A: Allocator + Clone, const N: usize> Serialize for wfslab::SlabArray<T, A, N> {
     fn serialize<FA: Allocator>(&self, f: &mut fmt::Formatter<FA>) {
         use core::fmt::Write;
 
         f.dictionary(true, |f| {
-            for (loc, item) in self.iter() {
-                let mut buf: ArrayString<256> = ArrayString::new();
-                write!(buf, "{}-{}", loc.slab_index, loc.slot_index).unwrap();
+            for (index, item) in self.iter() {
+                let mut buf: InlineString<256> = InlineString::new();
+                write!(buf, "{index}").unwrap();
                 f.field(&buf, |f| item.serialize(f))
             }
         });
@@ -440,6 +432,22 @@ impl<A: Allocator> Deserialize<A> for u64 {
     }
 }
 
+impl<A: Allocator> Deserialize<A> for usize {
+    fn deserialize<NA>(node: &Node<NA>, _: A) -> Result<Self, DeserializeError>
+    where
+        NA: Allocator + Clone,
+    {
+        match node {
+            Node::Int(int) => usize::try_from(*int).map_err(|_| DeserializeError::IntConversion),
+            Node::Uint(uint) => usize::try_from(*uint).map_err(|_| DeserializeError::IntConversion),
+            other => Err(DeserializeError::Kind {
+                expected: Kind::Uint,
+                got: other.kind(),
+            }),
+        }
+    }
+}
+
 impl<A: Allocator> Deserialize<A> for f32 {
     fn deserialize<NA>(node: &Node<NA>, _: A) -> Result<Self, DeserializeError>
     where
@@ -588,8 +596,7 @@ impl<T: Deserialize<A>, A: Allocator + Clone> Deserialize<A> for Vec<T, A> {
     }
 }
 
-// We only implement deserialize for ArrayVec here, because we don't own it.
-impl<T: Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for ArrayVec<T, N> {
+impl<T: Clone + Copy + Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for InlineVec<T, N> {
     fn deserialize<NA>(node: &Node<NA>, allocator: A) -> Result<Self, DeserializeError>
     where
         NA: Allocator + Clone,
@@ -603,14 +610,14 @@ impl<T: Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for
                     });
                 }
 
-                let mut arrayvec: ArrayVec<T, N> = ArrayVec::new();
+                let mut inlinevec: InlineVec<T, N> = InlineVec::new();
 
                 for item_node in array {
                     let item = T::deserialize(item_node, allocator.clone())?;
-                    arrayvec.push(item);
+                    inlinevec.push(item);
                 }
 
-                Ok(arrayvec)
+                Ok(inlinevec)
             }
             other => Err(DeserializeError::Kind {
                 expected: Kind::Array,
@@ -620,7 +627,7 @@ impl<T: Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for
     }
 }
 
-impl<A: Allocator, const N: usize> Deserialize<A> for ArrayString<N> {
+impl<A: Allocator + Clone, const N: usize> Deserialize<A> for InlineString<N> {
     fn deserialize<NA>(node: &Node<NA>, _: A) -> Result<Self, DeserializeError>
     where
         NA: Allocator + Clone,
@@ -634,10 +641,10 @@ impl<A: Allocator, const N: usize> Deserialize<A> for ArrayString<N> {
                     });
                 }
 
-                let arraystring: ArrayString<N> =
-                    ArrayString::from(unsafe { str::from_utf8_unchecked(string) }).unwrap();
+                let mut s = InlineString::new();
+                s.push_str(unsafe { str::from_utf8_unchecked(string) });
 
-                Ok(arraystring)
+                Ok(s)
             }
             other => Err(DeserializeError::Kind {
                 expected: Kind::String,
@@ -895,27 +902,13 @@ impl<A: Allocator> Deserialize<A> for wftime::Nanos {
 }
 
 #[cfg(feature = "wfslab")]
-impl<A: Allocator> Deserialize<A> for wfslab::SlabLoc {
-    fn deserialize<NA>(node: &Node<NA>, _: A) -> Result<Self, DeserializeError>
-    where
-        NA: Allocator + Clone,
-    {
-        match node.string() {
-            Some(s) => parse_slab_loc(s),
-            None => Err(DeserializeError::Kind {
-                expected: Kind::String,
-                got: node.kind(),
-            }),
-        }
-    }
-}
-
-#[cfg(feature = "wfslab")]
 impl<T: Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for wfslab::SlabArray<T, A, N> {
     fn deserialize<NA>(node: &Node<NA>, allocator: A) -> Result<Self, DeserializeError>
     where
         NA: Allocator + Clone,
     {
+        use core::str::FromStr;
+
         match node {
             Node::Dictionary(dictionary) => {
                 let mut slab_array = wfslab::SlabArray::new_in(allocator.clone());
@@ -925,11 +918,12 @@ impl<T: Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for
                     //
                     // SAFETY: serialize keys are always valid strings
                     let s = unsafe { str::from_utf8_unchecked(k) };
-                    let loc = parse_slab_loc(s)?;
+                    // TODO(jt): @Cleanup Better error.
+                    let index = usize::from_str(s).map_err(|_| DeserializeError::Other)?;
                     let value = T::deserialize(v, allocator.clone())?;
 
-                    slab_array.reserve_for_loc(loc);
-                    slab_array.insert(loc, value);
+                    slab_array.reserve_for_index(index);
+                    slab_array.insert(index, value);
                 }
 
                 Ok(slab_array)
@@ -940,30 +934,6 @@ impl<T: Deserialize<A>, A: Allocator + Clone, const N: usize> Deserialize<A> for
             }),
         }
     }
-}
-
-#[cfg(feature = "wfslab")]
-fn parse_slab_loc(s: &str) -> Result<wfslab::SlabLoc, DeserializeError> {
-    let mut split = s.split('-');
-
-    // They are not technically struct fields, but the error is more helpful this way.
-    let slab_index_str = split
-        .next()
-        .ok_or(DeserializeError::MissingStructField { ident: "slab_index" })?;
-    let slot_index_str = split
-        .next()
-        .ok_or(DeserializeError::MissingStructField { ident: "slot_index" })?;
-
-    if split.next().is_some() {
-        // TODO(jt): @Correctness What kind of error is this? Parse?
-        return Err(DeserializeError::Other);
-    }
-
-    // TODO(jt): @Correctness Is the error kind really IntConversion?
-    let slab_index = u32::from_str(slab_index_str).map_err(|_| DeserializeError::IntConversion)?;
-    let slot_index = u32::from_str(slot_index_str).map_err(|_| DeserializeError::IntConversion)?;
-
-    Ok(wfslab::SlabLoc { slab_index, slot_index })
 }
 
 // This is our less convenient work-around for what Thekla has in JAI, where they can use the struct

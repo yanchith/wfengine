@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::fmt::Write;
 
-use arrayvec::ArrayString;
+use wfinlinevec::InlineString;
 
 pub struct Formatter<A: Allocator> {
     // TODO(yan): String<A>, once it exists.
@@ -38,7 +38,7 @@ impl<A: Allocator> Formatter<A> {
     pub fn float<F: Into<f64>>(&mut self, value: F) {
         let value = value.into();
 
-        let mut buf: ArrayString<256> = ArrayString::new();
+        let mut buf: InlineString<256> = InlineString::new();
         write!(buf, "{value}").unwrap();
         self.data.extend(buf.as_bytes());
     }
@@ -46,7 +46,7 @@ impl<A: Allocator> Formatter<A> {
     pub fn int<I: Into<i64>>(&mut self, value: I) {
         let value = value.into();
 
-        let mut buf: ArrayString<256> = ArrayString::new();
+        let mut buf: InlineString<256> = InlineString::new();
         write!(buf, "{value}").unwrap();
         self.data.extend(buf.as_bytes());
     }
@@ -54,7 +54,7 @@ impl<A: Allocator> Formatter<A> {
     pub fn uint<U: Into<u64>>(&mut self, value: U) {
         let value = value.into();
 
-        let mut buf: ArrayString<256> = ArrayString::new();
+        let mut buf: InlineString<256> = InlineString::new();
         write!(buf, "{value}").unwrap();
         self.data.extend(buf.as_bytes());
     }

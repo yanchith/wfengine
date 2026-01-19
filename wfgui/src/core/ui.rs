@@ -3,17 +3,16 @@ use alloc::vec::Vec;
 use core::mem;
 use core::ops::Range;
 
-use arrayvec::ArrayString;
 use wfarena::Arena;
 use wfcommon::static_assert;
 use wfflags::flags;
+use wfinlinevec::InlineString;
 use wfmath::Box2;
 use wfmath::Vec2;
 use wfmath::Vec4;
 use wfmath::srgb_to_linear;
 use wfmath::vec2;
 use wfslab::SlabArray;
-use wfslab::SlabLoc;
 use wftime::Nanos;
 
 use crate::core::draw_list::Command;
@@ -25,7 +24,7 @@ use crate::core::font_atlas::UnicodeRangeFlags;
 const ROOT_IDX: usize = 0;
 const OVERLAY_ROOT_IDX: usize = 1;
 
-static DEFAULT_STRING: &ArrayString<256> = &ArrayString::new_const();
+static DEFAULT_STRING: &InlineString<256> = &InlineString::new();
 
 #[flags(u32)]
 pub enum Inputs {
@@ -153,31 +152,26 @@ pub enum CtrlFlags {
 macro_rules! id {
     ($loop_prefix:expr) => {
         $crate::CtrlId {
-            line: line!(),
-            loop_prefix: $loop_prefix,
             file: file!(),
+            line: line!(),
+            column: column!(),
+            loop_prefix: $loop_prefix,
         }
     };
 }
 
 // TODO(jt): @Speed @Memory Consider compressing this to 64 or 128 bits (currently is 192) by
 // hashing the source file.
-//
-// TODO(jt): @Correctness This ID still isn't as unique as we'd like, because someone can still
-// smuggle multiple of id!() calls onto the same line in the same file. Ideally, we want a
-// compile-time counter (like C has in unity builds, or like JAI has (if it doesn't reset across
-// modules)). A good thing about that would also be that we'd cut down the size of this struct,
-// storing just u32+u32 instead of u32+u32+pointer+usize. We could also try exploiting TypeId::of
-// inside macro, but that's u64+u64+u32 AND it is not guaranteed to be unique between crates.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CtrlId {
-    pub line: u32,
-    pub loop_prefix: u32,
     pub file: &'static str,
+    pub line: u32,
+    pub column: u32,
+    pub loop_prefix: u32,
 }
 
-static_assert!(size_of::<CtrlId>() == 24);
+static_assert!(size_of::<CtrlId>() == 32);
 static_assert!(align_of::<CtrlId>() == 8);
 
 #[repr(C, align(64))]
@@ -195,7 +189,7 @@ struct CtrlNode {
     child_idx: Option<usize>,
     sibling_idx: Option<usize>,
 
-    strings_idx: Option<SlabLoc>,
+    strings_idx: Option<usize>,
 
     first_frame: u32,
     // Deallocate if not current.
@@ -260,7 +254,7 @@ pub struct Ui {
 
     ctrl_tree: SlabArray<CtrlNode, &'static Arena, 1024>,
     // TODO(jt): Turn this into a "large memory" API instead of storing just strings?
-    ctrl_strings: SlabArray<ArrayString<256>, &'static Arena, 64>,
+    ctrl_strings: SlabArray<InlineString<256>, &'static Arena, 64>,
 
     building_overlay: bool,
     build_parent_idx: Option<usize>,
@@ -278,7 +272,7 @@ pub struct Ui {
     inputs_pressed: Inputs,
     inputs_released: Inputs,
     modifiers: Modifiers,
-    received_characters: ArrayString<32>,
+    received_characters: InlineString<32>,
     // TODO(jt): @Memory Would we great if we didn't allocate the String here somehow.
     clipboard_getter: fn() -> String,
     clipboard_setter: fn(&str),
@@ -393,7 +387,7 @@ impl Ui {
             inputs_pressed: Inputs::NONE,
             inputs_released: Inputs::NONE,
             modifiers: Modifiers::NONE,
-            received_characters: ArrayString::new(),
+            received_characters: InlineString::new(),
             clipboard_getter: empty_clipboard_getter,
             clipboard_setter: empty_clipboard_setter,
 
@@ -1545,7 +1539,7 @@ impl Frame<'_> {
         &mut self.ui.ctrl_tree[self.ui.build_parent_idx.unwrap()].state
     }
 
-    pub fn ctrl_string(&self) -> &ArrayString<256> {
+    pub fn ctrl_string(&self) -> &InlineString<256> {
         if let Some(idx) = self.ui.ctrl_tree[self.ui.build_parent_idx.unwrap()].strings_idx {
             &self.ui.ctrl_strings[idx]
         } else {
@@ -1553,13 +1547,13 @@ impl Frame<'_> {
         }
     }
 
-    pub fn ctrl_string_mut(&mut self) -> &mut ArrayString<256> {
+    pub fn ctrl_string_mut(&mut self) -> &mut InlineString<256> {
         let self_idx = self.ui.build_parent_idx.unwrap();
 
         if let Some(idx) = self.ui.ctrl_tree[self_idx].strings_idx {
             &mut self.ui.ctrl_strings[idx]
         } else {
-            let idx = self.ui.ctrl_strings.push(ArrayString::new());
+            let idx = self.ui.ctrl_strings.push(InlineString::new());
             self.ui.ctrl_tree[self_idx].strings_idx = Some(idx);
 
             &mut self.ui.ctrl_strings[idx]

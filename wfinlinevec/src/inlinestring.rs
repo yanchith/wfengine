@@ -11,6 +11,7 @@ use core::ops::DerefMut;
 use core::str;
 
 use crate::CapacityError;
+use crate::TryFromError;
 use crate::inlinevec::InlineVec;
 
 // TODO(jt): @Memory The length is u16 in InlineVec. If we wanted really small strings, we could
@@ -29,8 +30,16 @@ pub struct InlineString<const N: usize>(InlineVec<u8, N>);
 
 impl<const N: usize> InlineString<N> {
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(InlineVec::new())
+    }
+
+    #[inline]
+    pub fn try_from_str(s: &str) -> Result<Self, TryFromError> {
+        let mut inlinestring = Self::new();
+        inlinestring.try_push_str(s).map_err(|_| TryFromError)?;
+
+        Ok(inlinestring)
     }
 
     #[inline]
@@ -44,11 +53,33 @@ impl<const N: usize> InlineString<N> {
     }
 
     #[inline]
+    pub fn try_push(&mut self, c: char) -> Result<(), CapacityError<char>> {
+        if c.len_utf8() > self.0.remaining_capacity() {
+            return Err(CapacityError { value: c });
+        }
+
+        // TODO(jt): @Speed Decode directly into the final buffer... but it likely doesn't matter,
+        // because pushing chars is already wrong and slow.
+        let mut buf = [0; 4];
+        let s = c.encode_utf8(&mut buf);
+
+        for &byte in s.as_bytes() {
+            // SAFETY: We checked the capacity ahead of time.
+            unsafe {
+                self.0.push_unchecked(byte);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[inline]
     pub fn try_push_str<'a>(&mut self, s: &'a str) -> Result<(), CapacityError<&'a str>> {
         if s.len() > self.0.remaining_capacity() {
             return Err(CapacityError { value: s });
         }
 
+        // TODO(jt): @Speed Set length once and do block copy.
         for &byte in s.as_bytes() {
             // SAFETY: We checked the capacity ahead of time.
             unsafe {
@@ -94,14 +125,26 @@ impl<const N: usize> InlineString<N> {
 
     #[inline]
     pub fn as_str(&self) -> &str {
-        // SAFETY: We only ever push valid UTF-8 fragments to the inner vec.
-        unsafe { str::from_utf8_unchecked(self.0.as_slice()) }
+        // Because we could have deserialized an invalid string, we can not use from_utf8_unchecked
+        // and instead panic on invalid data here. This is not great, but I don't know what sort of
+        // assumption does Rust/LLVM make w.r.t. utf8 strings and why invalid utf8 is (memory)
+        // unsafe... Maybe it skips bounds checking or something?
+        //
+        // TODO(jt): @Speed Provide _unchecked version of this function to reclaim the speed? (It
+        // would still make the check in debug builds).
+        str::from_utf8(self.0.as_slice()).unwrap()
     }
 
     #[inline]
     pub fn as_mut_str(&mut self) -> &mut str {
-        // SAFETY: We only ever push valid UTF-8 fragments to the inner vec.
-        unsafe { str::from_utf8_unchecked_mut(self.0.as_mut_slice()) }
+        // Because we could have deserialized an invalid string, we can not use from_utf8_unchecked
+        // and instead panic on invalid data here. This is not great, but I don't know what sort of
+        // assumption does Rust/LLVM make w.r.t. utf8 strings and why invalid utf8 is (memory)
+        // unsafe... Maybe it skips bounds checking or something?
+        //
+        // TODO(jt): @Speed Provide _unchecked version of this function to reclaim the speed? (It
+        // would still make the check in debug builds).
+        str::from_utf8_mut(self.0.as_mut_slice()).unwrap()
     }
 }
 
@@ -140,6 +183,15 @@ impl<const N: usize> Hash for InlineString<N> {
         // Hash exactly the same way &str would. If we didn't do this, the borrowed lookup keys for
         // hashmaps would hash differently to InlineStrings.
         self.as_str().hash(state);
+    }
+}
+
+impl<const N: usize> TryFrom<&str> for InlineString<N> {
+    type Error = TryFromError;
+
+    #[inline]
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_from_str(value).map_err(|_| TryFromError)
     }
 }
 
@@ -194,6 +246,7 @@ impl<const N: usize> fmt::Write for InlineString<N> {
     }
 }
 
+
 // TODO(jt): @Cleanup Implement the safe transmute trait from Rust's core instead.
 #[cfg(feature = "bytemuck")]
 mod bytemuck_impl {
@@ -201,94 +254,23 @@ mod bytemuck_impl {
 
     use super::*;
 
-    // TODO(jt): InlineStringBits has to be public, becuase it is mentioned as an item in a trait impl,
-    // but we currently do not re-export it from the crate, making it unnamable. If this becomes a
-    // problem, we can re-evaluate.
     //
-    // IMPORTANT(jt): InlineStringBits has to have the same layout as InlineString.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct InlineStringBits<const N: usize> {
-        len: u16,
-        data: [u8; N],
-    }
-
-    // TODO(jt): @Cleanup Not sure why Debug is required for Bits. Maybe the derive macro slaps on too
-    // many constraints?
-    impl<const N: usize> fmt::Debug for InlineStringBits<N> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            let len = self.len;
-            let data = &self.data;
-            write!(f, "InlineString {{ len: {len}, data: {data:?} }}")
-        }
-    }
-
-    // TODO(jt): @Cleanup Zeroable is oldstyle bytemuck, but currently it is a prerequisite for
-    // AnyBitPattern. Maybe we can remove this one day?
+    // InlineString used to implement CheckedBitPattern, but it was a lot of noise, and we are slowly
+    // phasing out our use of CheckedBitPattern across the codebase, becuase we'd like to always be
+    // able to deserialize data cheaply, and only perform validation when it is important to us.
     //
-    // SAFETY: u16 and u8 are AnyBitPattern, InlineStringBits is Zeroable.
-    unsafe impl<const N: usize> bytemuck::Zeroable for InlineStringBits<N> {}
-    // SAFETY: u16 and u8 are AnyBitPattern, so is InlineStringBits. AnyBitPattern just means we can safely cast
-    // to InlineStringBits, which is then further checked.
-    unsafe impl<const N: usize> bytemuck::AnyBitPattern for InlineStringBits<N> {}
 
-    // SAFETY: u16 and u8 are CheckedBitPattern, so is InlineString. InlineString knows how to check its own data.
-    unsafe impl<const N: usize> bytemuck::CheckedBitPattern for InlineString<N> {
-        type Bits = InlineStringBits<N>;
-
-        #[inline]
-        fn is_valid_bit_pattern(bits: &Self::Bits) -> bool {
-            if usize::from(bits.len) > N {
-                return false;
-            }
-
-            let bytes = &bits.data[0..usize::from(bits.len)];
-            match str::from_utf8(bytes) {
-                Ok(_) => true,
-                Err(_) => false,
-            }
-        }
-    }
+    // SAFETY: InlineString data is u8, which is AnyBitPattern. Moreso, the InlineVec header is
+    // AnyBitPattern, because whenever we use the length stored there, we make sure to clamp it to
+    // the capacity, so that we do not access out of bounds memory. If the length is incorrect, the
+    // program is incorrect also, but the worst thing that can happen is accessing the AnyBitPattern
+    // garbage bytes between length and capacity.
+    unsafe impl<T: Clone + Copy + bytemuck::AnyBitPattern, const N: usize> bytemuck::AnyBitPattern for InlineVec<T, N> {}
 
     // SAFETY: u16 and u8 are NoUninit, so is InlineVec. This is because u16 and u8 have no padding
     // bytes, and we manually zero the memory of InlineVec when creating it and we preserve it
     // initialized across copies by tracking the padding in a union.
     unsafe impl<const N: usize> bytemuck::NoUninit for InlineString<N> {}
-}
-
-// TODO(jt): @Cleanup Move this impl to wfserialize.
-#[cfg(feature = "serialize")]
-mod serialize_impl {
-    use core::alloc::Allocator;
-
-    use super::*;
-
-    impl<A: Allocator + Clone, const N: usize> wfserialize::Deserialize<A> for InlineString<N> {
-        fn deserialize<NA>(node: &wfserialize::Node<NA>, _: A) -> Result<Self, wfserialize::DeserializeError>
-        where
-            NA: Allocator + Clone,
-        {
-            match node {
-                wfserialize::Node::String(string) => {
-                    if string.len() > N {
-                        return Err(wfserialize::DeserializeError::StringCapacity {
-                            expected_up_to: N,
-                            got: string.len(),
-                        });
-                    }
-
-                    let mut s = InlineString::new();
-                    s.push_str(unsafe { str::from_utf8_unchecked(string) });
-
-                    Ok(s)
-                }
-                other => Err(wfserialize::DeserializeError::Kind {
-                    expected: wfserialize::Kind::String,
-                    got: other.kind(),
-                }),
-            }
-        }
-    }
 }
 
 #[cfg(test)]

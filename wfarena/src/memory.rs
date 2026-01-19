@@ -258,7 +258,7 @@ mod tests {
         let allocated_memory_ptr = NonNull::new(allocated_memory_slice.as_mut_ptr()).unwrap();
         let allocated_memory_len = allocated_memory_slice.len();
 
-        let arena_result = unsafe { Arena::with_memory_block(allocated_memory_ptr, allocated_memory_len) };
+        let arena_result = unsafe { Arena::with_first_block(allocated_memory_ptr, allocated_memory_len) };
 
         let arena = arena_result.unwrap();
 

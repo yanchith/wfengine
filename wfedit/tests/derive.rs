@@ -2,9 +2,9 @@
 
 use core::ptr::NonNull;
 
-use arrayvec::ArrayString;
 use wfarena::Arena;
 use wfedit::Edit;
+use wfinlinevec::InlineString;
 use wfmath::Vec3;
 use wftime::Nanos;
 
@@ -27,7 +27,7 @@ fn test_struct() {
     #[derive(Debug, PartialEq)]
     #[derive(wfedit::Edit)]
     struct IceCream {
-        flavor: ArrayString<20>,
+        flavor: InlineString<20>,
         flavor_normal: Vec3,
         scoops: u16,
     }
@@ -36,7 +36,7 @@ fn test_struct() {
     let mut frame = ui.begin_frame(Nanos::ZERO);
 
     let mut ice_cream = IceCream {
-        flavor: ArrayString::from("Peppermint").unwrap(),
+        flavor: InlineString::try_from("Peppermint").unwrap(),
         flavor_normal: Vec3::Z,
         scoops: 3,
     };
@@ -53,7 +53,7 @@ fn test_enum() {
     enum Snack {
         RiceCakes { count: u16 },
         IceCream { flavor: IceCreamFlavor, scoops: u16 },
-        ChiaPudding(f32, u16, ArrayString<16>),
+        ChiaPudding(f32, u16, InlineString<16>),
         Chocolate,
     }
 
@@ -83,7 +83,7 @@ fn make_arena() -> Arena {
     let memory_ptr = NonNull::new(memory_slice.as_mut_ptr()).unwrap();
     let memory_len = memory_slice.len();
 
-    let arena_result = unsafe { Arena::with_memory_block(memory_ptr, memory_len) };
+    let arena_result = unsafe { Arena::with_first_block(memory_ptr, memory_len) };
 
     let arena = arena_result.unwrap();
 

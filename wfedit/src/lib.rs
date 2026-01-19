@@ -7,8 +7,6 @@ use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::fmt::Write;
 
-use arrayvec::ArrayString;
-use arrayvec::ArrayVec;
 use wfcommon::cast_i8;
 use wfcommon::cast_i16;
 use wfcommon::cast_i32;
@@ -328,22 +326,6 @@ impl Edit for Vec4 {
     }
 }
 
-impl<const N: usize> Edit for ArrayString<N> {
-    fn edit(&mut self, frame: &mut wfgui::Frame, id: wfgui::CtrlId, label: &str, readonly: bool) -> bool {
-        let (changed, _) = wfgui::text_input_ex(
-            frame,
-            id,
-            self,
-            label,
-            wfgui::TextInputSettings {
-                readonly,
-                ..wfgui::TextInputSettings::default()
-            },
-        );
-        changed
-    }
-}
-
 impl<const N: usize> Edit for InlineString<N> {
     fn edit(&mut self, frame: &mut wfgui::Frame, id: wfgui::CtrlId, label: &str, readonly: bool) -> bool {
         let (changed, _) = wfgui::text_input_ex(
@@ -360,7 +342,7 @@ impl<const N: usize> Edit for InlineString<N> {
     }
 }
 
-// TODO(yan): @Cleanup This should use const generics, but Default impls for
+// TODO(jt): @Cleanup This should use const generics, but Default impls for
 // arrays don't use const generics yet.
 macro_rules! impl_edit_for_array {
     ( $n:expr ) => {
@@ -370,7 +352,7 @@ macro_rules! impl_edit_for_array {
 
                 if let Some(panel) = wfgui::begin_panel_with_fit_height(frame, id, "100%", label) {
                     for (i, value) in self.iter_mut().enumerate() {
-                        let mut s: ArrayString<16> = ArrayString::new();
+                        let mut s: InlineString<16> = InlineString::new();
                         let _ = write!(s, "[{i}]:");
 
                         modified |= value.edit(frame, wfgui::id!(cast_u32(i)), &s, readonly);
@@ -438,7 +420,7 @@ impl<T: Edit + Default, VA: Allocator> Edit for Vec<T, VA> {
                         draw_header: false,
                     },
                 ) {
-                    let mut s: ArrayString<16> = ArrayString::new();
+                    let mut s: InlineString<16> = InlineString::new();
                     let _ = write!(s, "[{i}]:");
 
                     if !readonly {
@@ -454,59 +436,6 @@ impl<T: Edit + Default, VA: Allocator> Edit for Vec<T, VA> {
             }
 
             if !readonly {
-                if wfgui::button(frame, wfgui::id!(cast_u32(self.len())), "+") {
-                    self.push(T::default());
-                    modified = true;
-                }
-            }
-
-            panel.end(frame);
-        }
-
-        if let Some(i) = remove {
-            self.remove(i);
-            modified = true;
-        }
-
-        modified
-    }
-}
-
-impl<T: Edit + Default, const N: usize> Edit for ArrayVec<T, N> {
-    fn edit(&mut self, frame: &mut wfgui::Frame, id: wfgui::CtrlId, label: &str, readonly: bool) -> bool {
-        let mut modified = false;
-        let mut remove = None;
-
-        if let Some(panel) = wfgui::begin_panel_with_fit_height(frame, id, "100%", label) {
-            for (i, value) in self.iter_mut().enumerate() {
-                if let Some(panel) = wfgui::begin_panel_with_layout_fit_height_options(
-                    frame,
-                    wfgui::id!(cast_u32(i)),
-                    "100%",
-                    label,
-                    wfgui::Layout::Vertical,
-                    &wfgui::PanelOptions {
-                        draw_padding: false,
-                        draw_border: false,
-                        draw_header: false,
-                    },
-                ) {
-                    let mut s: ArrayString<16> = ArrayString::new();
-                    let _ = write!(s, "[{i}]:");
-
-                    if !readonly {
-                        if wfgui::button(frame, wfgui::id!(0), "-") {
-                            remove = Some(i);
-                        }
-                    }
-
-                    modified |= value.edit(frame, wfgui::id!(1), &s, readonly);
-
-                    panel.end(frame)
-                }
-            }
-
-            if !readonly && self.len() < self.capacity() {
                 if wfgui::button(frame, wfgui::id!(cast_u32(self.len())), "+") {
                     self.push(T::default());
                     modified = true;
@@ -588,7 +517,7 @@ macro_rules! impl_edit_for_tuple {
                     let mut i: u32 = 0;
 
                     $(#[allow(unused_assignments)] {
-                        let mut s: ArrayString<16> = ArrayString::new();
+                        let mut s: InlineString<16> = InlineString::new();
                         let _ = write!(s, "{i}:");
 
                         modified |= self.$field.edit(frame, wfgui::id!(i), &s, readonly);

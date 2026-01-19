@@ -14,6 +14,7 @@ use core::ptr;
 use core::slice;
 
 use crate::CapacityError;
+use crate::TryFromError;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -29,22 +30,22 @@ union Header<T> {
 }
 
 impl<T> Header<T> {
-    const fn get(&self) -> u16 {
+    const fn get_len(&self) -> u16 {
         // SAFETY: We never create the padding variant of the enum.
         unsafe { self.len }
     }
 
-    const fn set(&mut self, len: u16) {
+    const fn set_len(&mut self, len: u16) {
         *self = Self { len };
     }
 
-    const fn inc(&mut self) {
+    const fn inc_len(&mut self) {
         // SAFETY: We never create the padding variant of the enum.
         let len = unsafe { &mut self.len };
         *len += 1;
     }
 
-    const fn dec(&mut self) {
+    const fn dec_len(&mut self) {
         // SAFETY: We never create the padding variant of the enum.
         let len = unsafe { &mut self.len };
         *len -= 1;
@@ -53,8 +54,8 @@ impl<T> Header<T> {
 
 impl<T> PartialEq for Header<T> {
     fn eq(&self, rhs: &Self) -> bool {
-        let lhs_len = self.get();
-        let rhs_len = rhs.get();
+        let lhs_len = self.get_len();
+        let rhs_len = rhs.get_len();
 
         lhs_len == rhs_len
     }
@@ -64,13 +65,13 @@ impl<T> Eq for Header<T> {}
 
 impl<T> Hash for Header<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u16(self.get());
+        state.write_u16(self.get_len());
     }
 }
 
 impl<T> fmt::Debug for Header<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let len = self.get();
+        let len = self.get_len();
         write!(f, "{len}")
     }
 }
@@ -83,7 +84,7 @@ impl<T> fmt::Debug for Header<T> {
 // it was a slice.
 #[derive(Clone, Copy)]
 pub struct InlineVec<T: Clone + Copy, const N: usize> {
-    len: Header<T>,
+    header: Header<T>,
     data: [MaybeUninit<T>; N],
 }
 
@@ -94,7 +95,7 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
     ///
     /// ```compile_fail
     /// use wfinlinevec::InlineVec;
-    /// let s: InlineVec<i32, 99999> = InlineVec::new();
+    /// let a: InlineVec<i32, 99999> = InlineVec::new();
     /// ```
     ///
     /// # Warning
@@ -104,7 +105,7 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
     ///
     /// ```
     /// use wfinlinevec::InlineVec;
-    /// let s: InlineVec<u8, 2> = InlineVec::new();
+    /// let a: InlineVec<u8, 2> = InlineVec::new();
     /// ```
     ///
     /// And this doesn't, becuase the vector's header has align_of at least 2 (depeding on T), so it
@@ -112,14 +113,14 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
     ///
     /// ```compile_fail
     /// use wfinlinevec::InlineVec;
-    /// let s: InlineVec<u8, 1> = InlineVec::new();
+    /// let a: InlineVec<u8, 1> = InlineVec::new();
     /// ```
     ///
     /// This also doesn't, for the same reason:
     ///
     /// ```compile_fail
     /// use wfinlinevec::InlineVec;
-    /// let s: InlineVec<[u8; 3], 3> = InlineVec::new();
+    /// let a: InlineVec<[u8; 3], 3> = InlineVec::new();
     /// ```
     #[inline]
     pub const fn new() -> Self {
@@ -158,9 +159,48 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
     }
 
     #[inline]
+    pub fn try_from_slice<'a>(s: &'a [T]) -> Result<Self, TryFromError> {
+        let mut inlinevec = Self::new();
+
+        // TODO(jt): @Speed Do a batch version of this: check once and do a block copy.
+        for &elem in s {
+            inlinevec.try_push(elem).map_err(|_| TryFromError)?;
+        }
+
+        Ok(inlinevec)
+    }
+
+    /// Find out if the stored length is in bounds of the given capacity.
+    ///
+    /// This can return false, if the InlineVec was deserialized. InlineVec always clamps its length
+    /// to prevent out of bounds accesses. Use this, if you want to know explicitly after
+    /// deserializing.
+    ///
+    /// ```
+    /// use core::mem;
+    /// use wfinlinevec::InlineVec;
+    ///
+    /// let data: [u16; 4] = [4, 420, 69, 0];
+    /// let a: InlineVec<u16, 3> = unsafe { mem::transmute(data) };
+    ///
+    /// assert!(a.len_in_bounds() == false);
+    /// ```
+    #[inline]
+    pub const fn len_in_bounds(&self) -> bool {
+        self.header.get_len() as usize <= N
+    }
+
+    #[inline]
     pub const fn len(&self) -> usize {
+        let header_len: u16 = self.header.get_len();
         // TODO(jt): @Cleanup usize::from, once there are const_trait_impl
-        self.len.get() as usize
+        let header_len: usize = header_len as usize;
+        // Clamp to prevent out of bounds access in case we were deserialized.
+        //
+        // TODO(jt): @Cleanup usize::min, once there are const_trait_impl
+        let len: usize = if header_len <= N { header_len } else { N };
+
+        len
     }
 
     #[inline]
@@ -180,8 +220,8 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
 
     #[inline]
     pub fn try_push(&mut self, value: T) -> Result<(), CapacityError<T>> {
-        debug_assert!(usize::from(self.len.get()) <= N);
-        if usize::from(self.len.get()) == N {
+        debug_assert!(usize::from(self.header.get_len()) <= N); // This will also assert if we were deserialized from bad data.
+        if usize::from(self.len()) == N {
             return Err(CapacityError { value });
         }
 
@@ -203,30 +243,32 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
     #[inline]
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn push_unchecked(&mut self, value: T) {
-        let value_slot = unsafe { self.data.get_unchecked_mut(usize::from(self.len.get())) };
+        let len = usize::from(self.len());
+
+        let value_slot = unsafe { self.data.get_unchecked_mut(len) };
         *value_slot = MaybeUninit::new(value);
 
-        self.len.inc();
+        self.header.inc_len();
     }
 
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
-        if self.len.get() == 0 {
+        if self.len() == 0 {
             return None;
         }
 
-        let value_slot = unsafe { self.data.get_unchecked(usize::from(self.len.get() - 1)) };
+        let value_slot = unsafe { self.data.get_unchecked(usize::from(self.len() - 1)) };
         let value = unsafe { value_slot.assume_init_read() };
 
-        self.len.dec();
+        self.header.dec_len();
 
         Some(value)
     }
 
     #[inline]
     pub fn try_insert(&mut self, index: usize, value: T) -> Result<(), CapacityError<T>> {
-        debug_assert!(usize::from(self.len.get()) <= N);
-        if usize::from(self.len.get()) == N {
+        debug_assert!(usize::from(self.header.get_len()) <= N); // This will also assert if we were deserialized from bad data.
+        if usize::from(self.len()) == N {
             return Err(CapacityError { value });
         }
 
@@ -251,7 +293,7 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
         let value_slot = unsafe { self.data.get_unchecked_mut(index) };
         *value_slot = MaybeUninit::new(value);
 
-        self.len.inc();
+        self.header.inc_len();
 
         Ok(())
     }
@@ -292,14 +334,14 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
             }
         }
 
-        self.len.dec();
+        self.header.dec_len();
 
         value
     }
 
     #[inline]
     pub fn get(&self, index: usize) -> Option<&T> {
-        if index >= usize::from(self.len.get()) {
+        if index >= usize::from(self.len()) {
             return None;
         }
 
@@ -311,7 +353,7 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
 
     #[inline]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        if index >= usize::from(self.len.get()) {
+        if index >= usize::from(self.len()) {
             return None;
         }
 
@@ -323,15 +365,15 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
 
     #[inline]
     pub fn clear(&mut self) {
-        self.len.set(0);
+        self.header.set_len(0);
     }
 
     #[inline]
     pub fn truncate(&mut self, len: usize) {
-        if len < usize::from(self.len.get()) {
+        if len < usize::from(self.len()) {
             // Casting to u16 should never cause loss of data here, because we verify that len is
             // smaller than our current len.
-            self.len.set(len as u16);
+            self.header.set_len(len as u16);
         }
     }
 
@@ -339,12 +381,12 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn set_len(&mut self, len: usize) {
         debug_assert!(len < N);
-        self.len.set(len as u16);
+        self.header.set_len(len as u16);
     }
 
     #[inline]
     pub fn as_slice(&self) -> &[T] {
-        let len = usize::from(self.len.get());
+        let len = usize::from(self.len());
         let s = unsafe { self.data.get_unchecked(0..len) };
 
         // SAFETY: Everything up to len is initialized.
@@ -353,7 +395,7 @@ impl<T: Clone + Copy, const N: usize> InlineVec<T, N> {
 
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        let len = usize::from(self.len.get());
+        let len = usize::from(self.len());
         let s = unsafe { self.data.get_unchecked_mut(0..len) };
 
         // SAFETY: Everything up to len is initialized.
@@ -414,6 +456,15 @@ impl<T: Clone + Copy + Hash, const N: usize> Hash for InlineVec<T, N> {
         // Hash exactly the same way a slice would. If we didn't do this, the borrowed lookup keys
         // for hashmaps would hash differently to InlineVecs.
         self.as_slice().hash(state);
+    }
+}
+
+impl<T: Clone + Copy, const N: usize> TryFrom<&[T]> for InlineVec<T, N> {
+    type Error = TryFromError;
+
+    #[inline]
+    fn try_from(value: &[T]) -> Result<Self, Self::Error> {
+        Self::try_from_slice(value)
     }
 }
 
@@ -555,107 +606,24 @@ mod bytemuck_impl {
 
     use super::*;
 
-    // TODO(jt): InlineVecBits has to be public, becuase it is mentioned as an item in a trait impl,
-    // but we currently do not re-export it from the crate, making it unnamable. If this becomes a
-    // problem, we can re-evaluate.
     //
-    // IMPORTANT(jt): InlineVecBits has to have the same layout as InlineVec.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct InlineVecBits<T: Clone + Copy + bytemuck::AnyBitPattern, const N: usize> {
-        len: u16,
-        data: [T; N],
-    }
-
-    // TODO(jt): @Cleanup Not sure why Debug is required for Bits. Maybe the derive macro slaps on too
-    // many constraints?
-    impl<T: Clone + Copy + fmt::Debug + bytemuck::AnyBitPattern, const N: usize> fmt::Debug for InlineVecBits<T, N> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            let len = self.len;
-            let data = &self.data;
-            write!(f, "InlineVec {{ len: {len}, data: {data:?} }}")
-        }
-    }
-
-    // TODO(jt): @Cleanup Zeroable is oldstyle bytemuck, but currently it is a prerequisite for
-    // AnyBitPattern. Maybe we can remove this one day?
+    // InlineVec used to implement CheckedBitPattern, but it was a lot of noise, and we are slowly
+    // phasing out our use of CheckedBitPattern across the codebase, becuase we'd like to always be
+    // able to deserialize data cheaply, and only perform validation when it is important to us.
     //
-    // SAFETY: If T is AnyBitPattern, InlineVecBits is Zeroable.
-    unsafe impl<T: Clone + Copy + bytemuck::AnyBitPattern, const N: usize> bytemuck::Zeroable for InlineVecBits<T, N> {}
-    // SAFETY: If T is AnyBitPattern, so is InlineVecBits. AnyBitPattern just means we can safely cast
-    // to InlineVecBits, which is then further checked.
-    unsafe impl<T: Clone + Copy + bytemuck::AnyBitPattern, const N: usize> bytemuck::AnyBitPattern for InlineVecBits<T, N> {}
 
-    // SAFETY: If T is CheckedBitPattern, so is InlineVec. InlineVec knows how to check its own data,
-    // and it attempts to check each value it contains in a loop.
-    unsafe impl<T: Clone + Copy + bytemuck::CheckedBitPattern, const N: usize> bytemuck::CheckedBitPattern
-        for InlineVec<T, N>
-    {
-        type Bits = InlineVecBits<T::Bits, N>;
-
-        #[inline]
-        fn is_valid_bit_pattern(bits: &Self::Bits) -> bool {
-            if usize::from(bits.len) > N {
-                return false;
-            }
-
-            for i in 0..usize::from(bits.len) {
-                let value = &bits.data[i];
-                if !T::is_valid_bit_pattern(value) {
-                    return false;
-                }
-            }
-
-            true
-        }
-    }
+    // SAFETY: If T is AnyBitPattern, so are all the Ts stored in the InlineVec. Moreso, the
+    // InlineVec header is AnyBitPattern, because whenever we use the length stored there, we make
+    // sure to clamp it to the capacity, so that we do not access out of bounds memory. If the
+    // length is incorrect, the program is incorrect also, but the worst thing that can happen is
+    // accessing the AnyBitPattern garbage values between length and capacity.
+    unsafe impl<T: Clone + Copy + bytemuck::AnyBitPattern, const N: usize> bytemuck::AnyBitPattern for InlineVec<T, N> {}
 
     // SAFETY: If T is NoUninit, so is InlineVec. This is because T: NoUninit forces all padding
     // bytes to be initialized for Ts, we manually zero the memory of InlineVec when creating it and
     // we preserve it initialized across copies by tracking the leading padding in a union and
     // making sure there is no trailing padding at compile time.
     unsafe impl<T: Clone + Copy + bytemuck::NoUninit, const N: usize> bytemuck::NoUninit for InlineVec<T, N> {}
-}
-
-// TODO(jt): @Cleanup Move this impl to wfserialize.
-#[cfg(feature = "serialize")]
-mod serialize_impl {
-    use core::alloc::Allocator;
-
-    use super::*;
-
-    impl<T: Clone + Copy + wfserialize::Deserialize<A>, A: Allocator + Clone, const N: usize>
-        wfserialize::Deserialize<A> for InlineVec<T, N>
-    {
-        fn deserialize<NA>(node: &wfserialize::Node<NA>, allocator: A) -> Result<Self, wfserialize::DeserializeError>
-        where
-            NA: Allocator + Clone,
-        {
-            match node {
-                wfserialize::Node::Array(array) => {
-                    if array.len() > N {
-                        return Err(wfserialize::DeserializeError::ArrayCapacity {
-                            expected_up_to: N,
-                            got: array.len(),
-                        });
-                    }
-
-                    let mut inlinevec: InlineVec<T, N> = InlineVec::new();
-
-                    for item_node in array {
-                        let item = T::deserialize(item_node, allocator.clone())?;
-                        inlinevec.push(item);
-                    }
-
-                    Ok(inlinevec)
-                }
-                other => Err(wfserialize::DeserializeError::Kind {
-                    expected: wfserialize::Kind::Array,
-                    got: other.kind(),
-                }),
-            }
-        }
-    }
 }
 
 // TODO(jt): @Cleanup Use slice::assume_init_ref instead, once it stabilizes.

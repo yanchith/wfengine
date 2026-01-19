@@ -4,9 +4,9 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 use std::alloc::Global;
 
-use arrayvec::ArrayString;
-use arrayvec::ArrayVec;
 use wfarena::Arena;
+use wfinlinevec::InlineString;
+use wfinlinevec::InlineVec;
 
 #[test]
 fn test_deserialize_in_global_dictionary_struct() {
@@ -17,8 +17,8 @@ fn test_deserialize_in_global_dictionary_struct() {
         i: i32,
         u: u8,
         f: f64,
-        s: arrayvec::ArrayString<16>,
-        a: arrayvec::ArrayVec<u8, 32>,
+        s: InlineString<16>,
+        a: InlineVec<u8, 32>,
         v: Vec<u8, Global>,
     }
 
@@ -31,8 +31,8 @@ fn test_deserialize_in_global_dictionary_struct() {
         i: -1,
         u: 0,
         f: 123.23,
-        s: ArrayString::from("Peekaboo").unwrap(),
-        a: ArrayVec::try_from(slice).unwrap(),
+        s: InlineString::try_from("Peekaboo").unwrap(),
+        a: InlineVec::try_from(slice).unwrap(),
         v: vec![1, 2, 3],
     }));
 }
@@ -71,7 +71,7 @@ fn test_deserialize_in_arena_vec() {
     struct Foo<'a>(Vec<u8, &'a Arena>);
 
     let b = allocate_memory_block(1 << 20, 16);
-    let arena = unsafe { Arena::with_memory_block(b.ptr(), b.len()).unwrap() };
+    let arena = unsafe { Arena::with_first_block(b.ptr(), b.len()).unwrap() };
 
     let str = r#"Foo ([1, 2, 3, 4])"#;
     let res = wfserialize::deserialize_in::<Foo, _, _>(str, &arena, &arena);
@@ -87,7 +87,7 @@ fn test_deserialize_in_arena_vec_nested() {
     struct Foo<'a>(Vec<Vec<u8, &'a Arena>, &'a Arena>);
 
     let b = allocate_memory_block(1 << 20, 16);
-    let arena = unsafe { Arena::with_memory_block(b.ptr(), b.len()).unwrap() };
+    let arena = unsafe { Arena::with_first_block(b.ptr(), b.len()).unwrap() };
 
     let str = r#"Foo ([[1, 2], [3], [4]])"#;
     let res = wfserialize::deserialize_in::<Foo, _, _>(str, &arena, &arena);

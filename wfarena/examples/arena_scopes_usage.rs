@@ -32,7 +32,7 @@ fn main() {
     let mut memory = [0u128; 1024];
     let memory_base: NonNull<u8> = NonNull::new(&mut memory).unwrap().cast();
 
-    let mut arena = unsafe { Arena::with_memory_block(memory_base, size_of_val(&memory)).unwrap() };
+    let mut arena = unsafe { Arena::with_first_block(memory_base, size_of_val(&memory)).unwrap() };
 
     assert!(arena.allocated_size() == ARENA_HEADER_SIZE);
 

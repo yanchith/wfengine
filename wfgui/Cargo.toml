@@ -21,10 +21,9 @@ font_liberation_mono = []
 workspace = true
 
 [dependencies]
-arrayvec = { version = "0.7.6", default-features = false }
-bytemuck = { version = "1.23.1", features = ["derive"] }
+bytemuck = { version = "1.24.0", features = ["derive"] }
 fontdue = "0.9.3"
-hashbrown = { version = "0.15.4", default-features = false, features = ["default-hasher", "nightly"] }
+hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher", "nightly"] }
 wfarena = { path = "../wfarena" }
 wfcommon = { path = "../wfcommon" }
 wfflags = { path = "../wfflags" }
@@ -33,4 +32,4 @@ wfmath = { path = "../wfmath" }
 wfslab = { path = "../wfslab" }
 wftime = { path = "../wftime", features = ["bytemuck"] }
 libm = "0.2.15"
-log = "0.4.27"
+log = "0.4.29"

@@ -9,7 +9,6 @@ use core::ops::Deref;
 use core::str;
 use core::str::Utf8Error;
 
-use arrayvec::ArrayString;
 use wfinlinevec::InlineString;
 
 #[derive(Debug)]
@@ -282,90 +281,6 @@ impl TextStorage for String {
     }
 }
 
-impl<const N: usize> TextStorage for ArrayString<N> {
-    #[inline]
-    fn truncate(&mut self, new_len: usize) {
-        self.truncate(new_len);
-    }
-
-    #[inline]
-    fn try_extend(&mut self, s: &str) -> Result<(), TextCapacityError> {
-        match self.try_push_str(s) {
-            Ok(()) => Ok(()),
-            Err(_) => Err(TextCapacityError),
-        }
-    }
-
-    #[inline]
-    fn try_splice(&mut self, index: usize, delete: usize, insert: &str) -> Result<(), TextCapacityError> {
-        // Maintain invariant: spliced string must stay valid.
-        assert!(self.is_char_boundary(index));
-        assert!(self.is_char_boundary(index + delete));
-
-        let delete_byte_count = delete;
-        let insert_byte_count = insert.len();
-        let len = self.len();
-
-        // TODO(jt): @Correctness @Hack This should be able to handle inserting multiple chars at
-        // the end of (empty) storage, but currently it first fails on our own assert, and then
-        // maybe also somewhere else, so we just redirect it to another method in this case. We
-        // should totally audit the entirety of this and cover it with tests.
-        if index == len && delete_byte_count == 0 {
-            return self.try_extend(insert);
-        }
-
-        assert!(delete_byte_count <= len);
-        assert!(index < len);
-
-        let new_len = len + insert_byte_count - delete_byte_count;
-        assert!(index <= new_len);
-
-        if new_len > self.capacity() {
-            return Err(TextCapacityError);
-        }
-
-        if insert_byte_count > delete_byte_count {
-            let range = index..len;
-            let dst = index + insert_byte_count - delete_byte_count;
-
-            // SAFETY: ArrayString::set_len should be safe, because we check for capacity
-            // beforehand, and because we immediately initialize the values afterwards
-            // (slice::copy_within) and never read the uninitialized parts of the slice, but what do
-            // I know.
-            unsafe { self.set_len(new_len) };
-
-            // SAFETY: Safe as long as we preserve the invariant that the data always has to be
-            // valid UTF8.
-            unsafe { self.as_bytes_mut().copy_within(range, dst) };
-        }
-
-        if insert_byte_count > 0 {
-            // SAFETY: Safe as long as we preserve the invariant that the data always has to be
-            // valid UTF8.
-            unsafe {
-                let b = self.as_bytes_mut();
-                b[index..index + insert_byte_count].copy_from_slice(insert.as_bytes());
-            }
-        }
-
-        if delete_byte_count > insert_byte_count {
-            let range = index + delete_byte_count..len;
-            let dst = index + insert_byte_count;
-
-            // SAFETY: Safe as long as we preserve the invariant that the data always has to be
-            // valid UTF8.
-            unsafe {
-                let b = self.as_bytes_mut();
-                b.copy_within(range, dst);
-            }
-
-            self.truncate(new_len);
-        }
-
-        Ok(())
-    }
-}
-
 impl<const N: usize> TextStorage for InlineString<N> {
     #[inline]
     fn truncate(&mut self, new_len: usize) {
@@ -412,7 +327,7 @@ impl<const N: usize> TextStorage for InlineString<N> {
             let range = index..len;
             let dst = index + insert_byte_count - delete_byte_count;
 
-            // SAFETY: ArrayString::set_len should be safe, because we check for capacity
+            // SAFETY: InlineString::set_len should be safe, because we check for capacity
             // beforehand, and because we immediately initialize the values afterwards
             // (slice::copy_within) and never read the uninitialized parts of the slice, but what do
             // I know.

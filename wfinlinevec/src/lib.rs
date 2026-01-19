@@ -11,3 +11,6 @@ pub use inlinevec::InlineVecIter;
 pub struct CapacityError<T> {
     pub value: T,
 }
+
+#[derive(Debug)]
+pub struct TryFromError;

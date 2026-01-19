@@ -5,11 +5,9 @@ edition = "2024"
 
 [features]
 bytemuck = ["dep:bytemuck"]
-serialize = ["dep:wfserialize"]
 
 [lints]
 workspace = true
 
 [dependencies]
-bytemuck = { version = "1.23.1", features = ["derive"], optional = true }
-wfserialize = { path = "../wfserialize", optional = true }
+bytemuck = { version = "1.24.0", features = ["derive"], optional = true }

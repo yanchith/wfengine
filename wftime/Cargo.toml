@@ -10,4 +10,4 @@ bytemuck = ["dep:bytemuck"]
 workspace = true
 
 [dependencies]
-bytemuck = { version = "1.23.1", features = ["derive"], optional = true }
+bytemuck = { version = "1.24.0", features = ["derive"], optional = true }

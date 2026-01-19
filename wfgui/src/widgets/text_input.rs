@@ -1,5 +1,5 @@
-use arrayvec::ArrayString;
 use wfcommon::cast_u32;
+use wfinlinevec::InlineString;
 use wfmath::Box2;
 
 use crate::core::Align;
@@ -79,7 +79,7 @@ pub fn text_input_ex(
     let cursor_position = frame.cursor_position();
     let inputs = frame.inputs_pressed();
     let modifiers = frame.modifiers();
-    let received_characters: ArrayString<32> = ArrayString::from(frame.received_characters()).unwrap();
+    let received_characters: InlineString<32> = InlineString::try_from(frame.received_characters()).unwrap();
     let clipboard_getter = frame.get_clipboard_getter();
     let clipboard_setter = frame.get_clipboard_setter();
 
