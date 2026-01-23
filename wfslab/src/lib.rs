@@ -93,10 +93,11 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
         // We don't support zero-sized types.
         const { assert!(size_of::<T>() > 0) };
         // We only support power of two N, because that allows us to avoid idiv when computing
-        // locations out of indices.
-        const { assert!(usize::is_power_of_two(N)) };
+        // locations out of indices, as well as computing the number of slabs.
+        const { assert!(N > 0 && usize::is_power_of_two(N)) };
+        let shift = const { usize::trailing_zeros(N) };
 
-        let slabs_capacity = capacity / N + usize::from(capacity % N != 0);
+        let slabs_capacity = (capacity >> shift) + usize::from(capacity & (N - 1) != 0);
         let mut slabs = Vec::with_capacity_in(slabs_capacity, allocator.clone());
         for _ in 0..slabs_capacity {
             allocate_slab(allocator.clone(), &mut slabs);
@@ -135,7 +136,13 @@ impl<T, A: Allocator + Clone, const N: usize> SlabArray<T, A, N> {
 
             if capacity_requested > capacity_have {
                 let difference = capacity_requested - capacity_have;
-                difference / N + usize::from(difference % N != 0)
+
+                // We only support power of two N, because that allows us to avoid idiv when computing
+                // locations out of indices, as well as computing the number of slabs.
+                const { assert!(N > 0 && usize::is_power_of_two(N)) };
+                let shift = const { usize::trailing_zeros(N) };
+
+                (difference >> shift) + usize::from(difference & (N - 1) != 0)
             } else {
                 0
             }
@@ -776,8 +783,7 @@ fn clone_slab<T: Clone, const N: usize>(dst: *mut Slab<T, N>, src: NonNull<Slab<
 }
 
 const fn index_to_location<const N: usize>(index: usize) -> (usize, usize) {
-    const { assert!(usize::is_power_of_two(N)) };
-
+    const { assert!(N > 0 && usize::is_power_of_two(N)) };
     let shift = const { usize::trailing_zeros(N) };
 
     let slab_index = index >> shift;
@@ -789,8 +795,7 @@ const fn index_to_location<const N: usize>(index: usize) -> (usize, usize) {
 }
 
 const fn location_to_index<const N: usize>(slab_index: usize, slot_index: usize) -> usize {
-    const { assert!(usize::is_power_of_two(N)) };
-
+    const { assert!(N > 0 && usize::is_power_of_two(N)) };
     let shift = const { usize::trailing_zeros(N) };
 
     debug_assert!(slot_index < N);
@@ -808,6 +813,14 @@ mod tests {
     use oorandom::Rand32;
 
     use super::*;
+
+    #[test]
+    fn test_regression_incorrect_shr_in_new_and_reserve() {
+        // This would panic before the fix, because we did '0>>1024' (the 1024 would overflow
+        // 32...), but instead we should have done '0>>BSF(1024)'. (BSF is called trailing_zeros in
+        // Rust.)
+        let _s: SlabArray<i32, _, 1024> = SlabArray::new_in(Global);
+    }
 
     #[test]
     fn test_slab_general() {
